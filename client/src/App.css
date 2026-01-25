@@ -280,10 +280,11 @@ a.btn-ghost {
 /* ============================================
    MOBILE RESPONSIVE STYLES - 768px 이하
    ============================================ */
-@media screen and (max-width: 768px) {
-  /* 햄버거 버튼 - 모바일에서만 표시 */
-  header.top-bar .hamburger-btn,
-  .top-bar .hamburger-btn,
+@media only screen and (max-width: 768px) {
+  /* 햄버거 버튼 - 모바일에서만 표시 (최우선 적용) */
+  header.top-bar button.hamburger-btn,
+  .top-bar button.hamburger-btn,
+  button.hamburger-btn,
   .hamburger-btn {
     display: flex !important;
     align-items: center !important;
@@ -294,9 +295,11 @@ a.btn-ghost {
     height: 40px !important;
     min-width: 40px !important;
     min-height: 40px !important;
+    position: relative !important;
+    z-index: 1001 !important;
   }
 
-  /* 데스크톱 버튼들 - 모바일에서 완전히 숨김 */
+  /* 데스크톱 버튼들 - 모바일에서 완전히 숨김 (최우선 적용) */
   header.top-bar .top-bar-actions,
   .top-bar .top-bar-actions,
   .top-bar-actions {
@@ -307,14 +310,16 @@ a.btn-ghost {
     overflow: hidden !important;
     opacity: 0 !important;
     pointer-events: none !important;
+    position: absolute !important;
+    left: -9999px !important;
   }
 
-  /* 모바일 메뉴 오버레이 - 메뉴가 열려있을 때만 표시 (React 조건부 렌더링으로 제어) */
+  /* 모바일 메뉴 오버레이 - 메뉴가 열려있을 때만 표시 */
   .mobile-menu-overlay {
     display: block !important;
   }
 
-  /* 모바일 메뉴 - 메뉴가 열려있을 때만 표시 (React 조건부 렌더링으로 제어) */
+  /* 모바일 메뉴 - 메뉴가 열려있을 때만 표시 */
   .mobile-menu {
     display: flex !important;
   }
@@ -323,8 +328,11 @@ a.btn-ghost {
 /* ============================================
    DESKTOP STYLES - 769px 이상
    ============================================ */
-@media screen and (min-width: 769px) {
+@media only screen and (min-width: 769px) {
   /* 햄버거 버튼 - 데스크톱에서 완전히 숨김 */
+  header.top-bar button.hamburger-btn,
+  .top-bar button.hamburger-btn,
+  button.hamburger-btn,
   .hamburger-btn {
     display: none !important;
     visibility: hidden !important;
