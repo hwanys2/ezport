@@ -145,6 +145,7 @@ a.btn-ghost {
   margin-bottom: 24px;
   padding-bottom: 16px;
   border-bottom: 1px solid #e2e8f0;
+  position: relative;
 }
 
 .brand-link {
@@ -275,12 +276,29 @@ a.btn-ghost {
 
 /* Mobile responsive styles */
 @media (max-width: 768px) {
+  .top-bar {
+    position: relative;
+  }
+
   .hamburger-btn {
     display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    position: relative !important;
+    z-index: 1001 !important;
   }
 
   .top-bar-actions {
     display: none !important;
+    visibility: hidden !important;
+  }
+
+  .mobile-menu-overlay {
+    display: block;
+  }
+
+  .mobile-menu {
+    display: flex;
   }
 }
 
