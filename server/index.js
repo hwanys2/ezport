@@ -606,6 +606,11 @@ app.get('/api/portfolios/public', async (req, res) => {
     }
   });
 
+  // USD 종목이 있으면 환율 확인 (환율도 캐시된 것만 사용)
+  if (rows.length > 0) {
+    ensureExchangeRate(rows, latest);
+  }
+
   const grouped = portfolios.map((portfolio) => {
     const items = rows.filter((row) => row.portfolio_id === portfolio.id);
     const view = computePortfolioView(portfolio, items, latest);
