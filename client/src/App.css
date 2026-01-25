@@ -240,6 +240,16 @@ a.btn-ghost {
   flex-direction: column;
   gap: 12px;
   overflow-y: auto;
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
 }
 
 .mobile-menu-item {
@@ -266,11 +276,11 @@ a.btn-ghost {
 /* Mobile responsive styles */
 @media (max-width: 768px) {
   .hamburger-btn {
-    display: block;
+    display: block !important;
   }
 
   .top-bar-actions {
-    display: none;
+    display: none !important;
   }
 
   .mobile-menu-overlay {
