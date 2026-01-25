@@ -282,14 +282,6 @@ a.btn-ghost {
   .top-bar-actions {
     display: none !important;
   }
-
-  .mobile-menu-overlay {
-    display: block;
-  }
-
-  .mobile-menu {
-    display: flex;
-  }
 }
 
 .layout {

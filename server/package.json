@@ -1,0 +1,33 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "krx:update": "node scripts/update_krx.js",
+    "etf:update": "node scripts/update_etf.js",
+    "us:update": "node scripts/update_us_stocks.js",
+    "seed": "node scripts/seed_assets.js",
+    "seed:100": "node scripts/seed_assets.js 100",
+    "seed:etf": "node scripts/seed_etf.js",
+    "seed:us": "node scripts/seed_us_stocks.js",
+    "seed:us:100": "node scripts/seed_us_stocks.js 100"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.6.2",
+    "bull": "^4.16.5",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "iconv-lite": "^0.7.2",
+    "jsonwebtoken": "^9.0.3",
+    "xlsx": "^0.18.5",
+    "yahoo-finance2": "^3.11.2",
+    "zod": "^4.3.5"
+  }
+}

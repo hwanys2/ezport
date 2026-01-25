@@ -19,8 +19,7 @@ export default function PortfolioListPage({ user, onLogout }) {
       .then((data) => {
         setPublicPortfolios(data.items || [])
       })
-      .catch((err) => {
-        console.error('[Public Portfolios] Error:', err);
+      .catch(() => {
         setPublicPortfolios([]);
       })
   }, [])

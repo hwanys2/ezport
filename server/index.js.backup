@@ -1,0 +1,866 @@
+const express = require('express');
+const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const yahooFinanceModule = require('yahoo-finance2');
+const { z } = require('zod');
+const { db, initDb } = require('./db');
+const { hasAnyListings, searchByNameKo, searchByAny } = require('./krx');
+const { getNaverPrices, isKoreanSymbol } = require('./naver');
+const { searchAssets } = require('./search_handler');
+
+const app = express();
+const PORT = process.env.PORT || 4000;
+const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
+
+initDb();
+
+const YahooFinanceCtor = yahooFinanceModule?.default || yahooFinanceModule;
+const yahooFinance = new YahooFinanceCtor({ suppressNotices: ['yahooSurvey'] });
+
+app.use(cors());
+app.use(express.json());
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.replace('Bearer ', '');
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload;
+    return next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+}
+
+const PRICE_CACHE_HOURS = 1; // Only refresh prices older than 1 hour
+
+async function getLatestPrices(symbols, forceRefresh = false) {
+  if (!symbols.length) return {};
+  
+  const now = new Date();
+  const cacheThreshold = new Date(now.getTime() - PRICE_CACHE_HOURS * 60 * 60 * 1000);
+  
+  const result = {};
+  const toFetch = [];
+  
+  if (!forceRefresh) {
+    // Check cache first
+    symbols.forEach((symbol) => {
+      const cached = db
+        .prepare('SELECT * FROM latest_prices WHERE symbol = ? AND updated_at > ?')
+        .get(symbol, cacheThreshold.toISOString());
+      if (cached && cached.price != null) {
+        result[symbol] = {
+          price: cached.price,
+          name: cached.name,
+          exchange: cached.exchange,
+          currency: cached.currency,
+        };
+      } else {
+        toFetch.push(symbol);
+      }
+    });
+  } else {
+    toFetch.push(...symbols);
+  }
+  
+  // Fetch missing/stale prices
+  if (toFetch.length > 0) {
+    // Split by source: Korean stocks use Naver, others use Yahoo
+    const koreanSymbols = toFetch.filter(isKoreanSymbol);
+    const internationalSymbols = toFetch.filter((s) => !isKoreanSymbol(s));
+    
+    const upsert = db.prepare(`
+      INSERT INTO latest_prices (symbol, price, name, exchange, currency, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(symbol) DO UPDATE SET
+        price = excluded.price,
+        name = excluded.name,
+        exchange = excluded.exchange,
+        currency = excluded.currency,
+        updated_at = excluded.updated_at
+    `);
+    
+    // Fetch Korean stocks from Naver Finance (more reliable, no rate limits)
+    if (koreanSymbols.length > 0) {
+      try {
+        console.log(`[Naver] Fetching ${koreanSymbols.length} Korean stocks...`);
+        const naverResults = await getNaverPrices(koreanSymbols);
+        Object.entries(naverResults).forEach(([symbol, data]) => {
+          if (data.price != null) {
+            upsert.run(symbol, data.price, data.name, data.exchange, data.currency, now.toISOString());
+            result[symbol] = data;
+          }
+        });
+        console.log(`[Naver] Successfully fetched ${Object.keys(naverResults).length} prices`);
+      } catch (error) {
+        console.error('[Naver] Fetch error:', error?.message || error);
+      }
+    }
+    
+    // Fetch international stocks from Yahoo Finance
+    if (internationalSymbols.length > 0) {
+      try {
+        console.log(`[Yahoo] Fetching ${internationalSymbols.length} international stocks...`);
+        const quotes = await yahooFinance.quote(internationalSymbols);
+        const list = Array.isArray(quotes) ? quotes : [quotes];
+        
+        list.forEach((quote) => {
+          if (!quote || !quote.symbol) return;
+          const price = quote.regularMarketPrice ?? null;
+          const name = quote.shortName || quote.longName || quote.symbol;
+          const exchange = quote.fullExchangeName || quote.exchange;
+          const currency = quote.currency;
+          
+          if (price != null) {
+            upsert.run(quote.symbol, price, name, exchange, currency, now.toISOString());
+            result[quote.symbol] = { price, name, exchange, currency };
+          }
+        });
+        console.log(`[Yahoo] Successfully fetched ${list.filter(q => q?.symbol).length} prices`);
+      } catch (error) {
+        console.error('[Yahoo] Fetch error:', error?.message || error);
+        const isRateLimit = error?.message?.includes('Too Many Requests') || 
+                           error?.message?.includes('429');
+        if (isRateLimit) {
+          console.log('[Yahoo] Rate limit detected - Korean stocks will use Naver fallback');
+        }
+      }
+    }
+  }
+  
+  return result;
+}
+
+function computePortfolioView(portfolio, items, latestPrices) {
+  const enrichedItems = items.map((item) => {
+    const latest = latestPrices[item.symbol] || {};
+    const latestPrice = latest.price ?? item.entry_price;
+    const value = item.current_quantity * (latestPrice || 0);
+    return {
+      ...item,
+      latest_price: latestPrice,
+      current_value: value,
+    };
+  });
+
+  const currentTotalValue = enrichedItems.reduce((sum, item) => sum + item.current_value, 0);
+  const additionalCash = portfolio.additional_cash ?? 0;
+  const targetTotalValue = currentTotalValue + additionalCash;
+
+  const finalItems = enrichedItems.map((item) => {
+    const currentWeight = currentTotalValue > 0 ? (item.current_value / currentTotalValue) * 100 : 0;
+    const diff = currentWeight - item.target_weight;
+    const tolerance = item.tolerance ?? 0;
+    const min = item.target_weight - tolerance;
+    const max = item.target_weight + tolerance;
+    const outOfRange = currentWeight < min || currentWeight > max;
+
+    // Rebalancing calculation based on (current value + additional cash)
+    const targetValue = targetTotalValue > 0 ? (targetTotalValue * item.target_weight) / 100 : 0;
+    const rebalanceAmount = targetValue - item.current_value;
+    const rebalanceQuantity =
+      item.latest_price && item.latest_price > 0
+        ? rebalanceAmount / item.latest_price
+        : 0;
+
+    return {
+      ...item,
+      current_weight: currentWeight,
+      diff,
+      tolerance_min: min,
+      tolerance_max: max,
+      out_of_range: outOfRange,
+      rebalance_amount: rebalanceAmount,
+      rebalance_quantity: rebalanceQuantity,
+    };
+  });
+
+  return {
+    ...portfolio,
+    current_total_value: currentTotalValue,
+    target_total_value: targetTotalValue,
+    additional_cash: additionalCash,
+    items: finalItems,
+  };
+}
+
+app.post('/api/auth/register', async (req, res) => {
+  const schema = z.object({
+    email: z.string().email(),
+    password: z.string().min(6),
+  });
+  const parse = schema.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload' });
+  }
+
+  const { email, password } = parse.data;
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+  if (existing) {
+    return res.status(409).json({ error: 'Email already registered' });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const result = db
+    .prepare('INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)')
+    .run(email, passwordHash, nowIso());
+
+  const token = jwt.sign({ id: result.lastInsertRowid, email }, JWT_SECRET, {
+    expiresIn: '7d',
+  });
+  return res.json({ token });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const schema = z.object({
+    email: z.string().email(),
+    password: z.string().min(6),
+  });
+  const parse = schema.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload' });
+  }
+
+  const { email, password } = parse.data;
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  if (!user) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  const ok = await bcrypt.compare(password, user.password_hash);
+  if (!ok) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, {
+    expiresIn: '7d',
+  });
+  return res.json({ token });
+});
+
+app.get('/api/me', authMiddleware, (req, res) => {
+  return res.json({ id: req.user.id, email: req.user.email });
+});
+
+app.get('/api/assets/search', authMiddleware, async (req, res) => {
+  const query = req.query.q;
+  if (!query || typeof query !== 'string') {
+    return res.status(400).json({ error: 'Query required' });
+  }
+  const trimmed = query.trim();
+  if (trimmed.length < 2) {
+    return res.json({ items: [], warning: '검색어를 2글자 이상 입력하세요.' });
+  }
+
+  // Check search cache first (cache for 1 hour)
+  const cacheKey = trimmed.toLowerCase();
+  const cacheThreshold = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const cached = db
+    .prepare('SELECT * FROM search_cache WHERE query = ? AND updated_at > ?')
+    .get(cacheKey, cacheThreshold);
+
+  if (cached) {
+    try {
+      const cachedResults = JSON.parse(cached.results);
+      return res.json({
+        items: cachedResults.items || [],
+        warning: cachedResults.warning,
+      });
+    } catch {
+      // Invalid cache, continue to fresh search
+    }
+  }
+
+  async function tryQuote(symbol) {
+    try {
+      const q = await yahooFinance.quote(symbol);
+      if (!q || !q.symbol) return null;
+      const price = q.regularMarketPrice ?? q.postMarketPrice ?? q.preMarketPrice ?? null;
+      return {
+        symbol: q.symbol,
+        name: q.shortName || q.longName || q.symbol,
+        exchange: q.fullExchangeName || q.exchange || null,
+        currency: q.currency || null,
+        price,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  // STEP 1: Try KRX cache first (works for Korean names, codes, and some romanized names)
+  if (hasAnyListings()) {
+    const krxCandidates = searchByAny(trimmed, 12);
+    if (krxCandidates.length > 0) {
+      console.log(`[Search] Found ${krxCandidates.length} KRX matches for "${trimmed}"`);
+      const verified = [];
+      for (const c of krxCandidates) {
+        const symbol = `${c.code}.${(c.yahoo_suffix || 'KS').toUpperCase()}`;
+        // Use Naver Finance for Korean stocks (no rate limits!)
+        // eslint-disable-next-line no-await-in-loop
+        const naverPrices = await getNaverPrices([symbol]);
+        if (naverPrices[symbol]) {
+          verified.push({
+            symbol,
+            name: c.name_ko,
+            exchange: naverPrices[symbol].exchange,
+            currency: naverPrices[symbol].currency,
+          });
+        }
+        if (verified.length >= 8) break;
+      }
+
+      if (verified.length > 0) {
+        const response = { items: verified };
+        // Cache the results
+        const upsertCache = db.prepare(
+          'INSERT INTO search_cache (query, results, updated_at) VALUES (?, ?, ?) ON CONFLICT(query) DO UPDATE SET results = excluded.results, updated_at = excluded.updated_at'
+        );
+        upsertCache.run(cacheKey, JSON.stringify(response), new Date().toISOString());
+        return res.json(response);
+      }
+    }
+  }
+
+  // STEP 2: If not found in KRX, fallback to Yahoo search (for international stocks)
+  const isNonAscii = /[^\x00-\x7F]/.test(trimmed);
+  if (isNonAscii) {
+    return res.json({
+      items: [],
+      warning:
+        '한글 검색 결과가 없습니다. KRX 종목 리스트를 업데이트하거나(`npm run krx:update`), 6자리 종목코드(예: 005930)로 시도해 주세요.',
+    });
+  }
+
+  function uniqBySymbol(items) {
+    const map = new Map();
+    items.forEach((item) => {
+      if (item?.symbol && !map.has(item.symbol)) map.set(item.symbol, item);
+    });
+    return [...map.values()];
+  }
+
+  async function tryQuote(symbol) {
+    try {
+      const q = await yahooFinance.quote(symbol);
+      if (!q || !q.symbol) return null;
+      const price = q.regularMarketPrice ?? q.postMarketPrice ?? q.preMarketPrice ?? null;
+      return {
+        symbol: q.symbol,
+        name: q.shortName || q.longName || q.symbol,
+        exchange: q.fullExchangeName || q.exchange || null,
+        currency: q.currency || null,
+        price,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function buildVariants(input) {
+    const base = input.trim();
+    const spaced = base
+      .replace(/([A-Za-z])([0-9])/g, '$1 $2')
+      .replace(/([0-9])([A-Za-z])/g, '$1 $2')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return uniqBySymbol([
+      { symbol: base, name: base },
+      { symbol: base.toUpperCase(), name: base.toUpperCase() },
+      { symbol: spaced, name: spaced },
+      { symbol: spaced.toUpperCase(), name: spaced.toUpperCase() },
+    ]).map((v) => v.symbol);
+  }
+
+  // KR: 6-digit code -> try .KS/.KQ via quote (Yahoo search often returns 0)
+  if (/^[0-9]{6}$/.test(trimmed)) {
+    const ks = await tryQuote(`${trimmed}.KS`);
+    if (ks) {
+      return res.json({
+        items: [
+          {
+            symbol: ks.symbol,
+            name: ks.name,
+            exchange: ks.exchange,
+            currency: ks.currency,
+          },
+        ],
+      });
+    }
+    const kq = await tryQuote(`${trimmed}.KQ`);
+    if (kq) {
+      return res.json({
+        items: [
+          {
+            symbol: kq.symbol,
+            name: kq.name,
+            exchange: kq.exchange,
+            currency: kq.currency,
+          },
+        ],
+      });
+    }
+    return res.json({
+      items: [],
+      warning:
+        '해당 6자리 코드는 야후파이낸스에서 조회되지 않았어요. (야후 미지원/상장폐지/심볼 불일치 가능) 다른 코드나 티커로 시도해 주세요.',
+    });
+  }
+
+  if (/^[0-9]{6}\\.(KS|KQ)$/i.test(trimmed)) {
+    const q = await tryQuote(trimmed.toUpperCase());
+    if (q) {
+      return res.json({
+        items: [
+          {
+            symbol: q.symbol,
+            name: q.name,
+            exchange: q.exchange,
+            currency: q.currency,
+          },
+        ],
+      });
+    }
+    return res.json({
+      items: [],
+      warning: '해당 심볼은 야후파이낸스에서 조회되지 않았어요.',
+    });
+  }
+
+  // Check search cache first (cache for 1 hour)
+  const cacheKey = trimmed.toLowerCase();
+  const cacheThreshold = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const cached = db
+    .prepare('SELECT * FROM search_cache WHERE query = ? AND updated_at > ?')
+    .get(cacheKey, cacheThreshold);
+
+  if (cached) {
+    try {
+      const cachedResults = JSON.parse(cached.results);
+      return res.json({
+        items: cachedResults.items || [],
+        warning: cachedResults.warning,
+      });
+    } catch {
+      // Invalid cache, continue to fresh search
+    }
+  }
+
+  try {
+    // Add delay to avoid rate limiting (500ms before first request)
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const variants = buildVariants(trimmed);
+    let merged = [];
+    for (const v of variants) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 500)); // Delay between variant searches
+      // eslint-disable-next-line no-await-in-loop
+      const result = await yahooFinance.search(v, { quotesCount: 8 });
+      const items = (result.quotes || []).map((quote) => ({
+        symbol: quote.symbol,
+        name: quote.shortname || quote.longname || quote.symbol,
+        exchange: quote.exchange,
+        currency: quote.currency,
+      }));
+      merged = uniqBySymbol([...merged, ...items]);
+      if (merged.length) break; // first good hit is usually enough
+    }
+
+    const response = {
+      items: merged,
+      warning: merged.length ? undefined : '검색 결과가 없어요. 티커/정식 심볼로 시도해 주세요.',
+    };
+
+    // Cache the results
+    const upsertCache = db.prepare(
+      'INSERT INTO search_cache (query, results, updated_at) VALUES (?, ?, ?) ON CONFLICT(query) DO UPDATE SET results = excluded.results, updated_at = excluded.updated_at'
+    );
+    upsertCache.run(cacheKey, JSON.stringify(response), new Date().toISOString());
+
+    return res.json(response);
+  } catch (error) {
+    console.error('Yahoo search failed:', error?.message || error);
+    
+    // Check if it's a rate limit error
+    const isRateLimit = error?.message?.includes('Too Many Requests') || 
+                       error?.message?.includes('429') ||
+                       error?.message?.includes('rate limit');
+
+    if (isRateLimit) {
+      return res.json({
+        items: [],
+        warning:
+          '야후파이낸스 API 요청 제한에 도달했어요. 잠시(5-10분) 기다린 후 다시 시도해 주세요. 또는 티커/코드를 직접 입력하세요.',
+      });
+    }
+
+    return res.json({
+      items: [],
+      warning: '검색에 실패했습니다. 티커(예: AAPL)로 다시 시도해 주세요.',
+    });
+  }
+});
+
+app.post('/api/portfolios', authMiddleware, async (req, res) => {
+  const schema = z.object({
+    name: z.string().min(1),
+    items: z
+      .array(
+        z.object({
+          symbol: z.string().min(1),
+          targetWeight: z.number().positive(),
+          quantity: z.number().nonnegative(),
+          tolerance: z.number().nonnegative().optional(),
+        })
+      )
+      .min(1),
+  });
+
+  const parse = schema.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload' });
+  }
+
+  const { name, items } = parse.data;
+  const symbols = [...new Set(items.map((item) => item.symbol.toUpperCase()))];
+
+  try {
+    const latest = await getLatestPrices(symbols);
+    const insertPortfolio = db.prepare(
+      'INSERT INTO portfolios (user_id, name, initial_invest_amount, created_at) VALUES (?, ?, ?, ?)'
+    );
+    const insertAsset = db.prepare(
+      'INSERT INTO assets (symbol, name, exchange, currency, created_at) VALUES (?, ?, ?, ?, ?)'
+    );
+    const findAsset = db.prepare('SELECT * FROM assets WHERE symbol = ?');
+    const insertItem = db.prepare(`
+      INSERT INTO portfolio_items (
+        portfolio_id, asset_id, target_weight, tolerance, entry_price,
+        initial_quantity, current_quantity, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const tx = db.transaction(() => {
+      const portfolioResult = insertPortfolio.run(
+        req.user.id,
+        name,
+        0,
+        nowIso()
+      );
+      const portfolioId = portfolioResult.lastInsertRowid;
+
+      items.forEach((item) => {
+        const symbol = item.symbol.toUpperCase();
+        const quote = latest[symbol];
+        const entryPrice = quote?.price ?? null;
+        if (!entryPrice || entryPrice <= 0) {
+          throw new Error(`Invalid price for ${symbol}`);
+        }
+        let asset = findAsset.get(symbol);
+        if (!asset) {
+          insertAsset.run(
+            symbol,
+            quote?.name || symbol,
+            quote?.exchange || null,
+            quote?.currency || null,
+            nowIso()
+          );
+          asset = findAsset.get(symbol);
+        }
+        const quantity = item.quantity;
+        insertItem.run(
+          portfolioId,
+          asset.id,
+          item.targetWeight,
+          item.tolerance ?? 0,
+          entryPrice,
+          quantity,
+          quantity,
+          nowIso()
+        );
+      });
+
+      return portfolioId;
+    });
+
+    const portfolioId = tx();
+    const portfolio = db
+      .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
+      .get(portfolioId, req.user.id);
+    const rows = db
+      .prepare(
+        `
+        SELECT portfolio_items.*, assets.symbol, assets.name, assets.exchange, assets.currency
+        FROM portfolio_items
+        JOIN assets ON portfolio_items.asset_id = assets.id
+        WHERE portfolio_items.portfolio_id = ?
+        ORDER BY portfolio_items.id ASC
+      `
+      )
+      .all(portfolioId);
+
+    const view = computePortfolioView(portfolio, rows, latest);
+    return res.status(201).json(view);
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Create failed' });
+  }
+});
+
+app.get('/api/portfolios', authMiddleware, async (req, res) => {
+  const portfolios = db
+    .prepare('SELECT * FROM portfolios WHERE user_id = ? ORDER BY created_at DESC')
+    .all(req.user.id);
+  if (!portfolios.length) {
+    return res.json({ items: [] });
+  }
+  const portfolioIds = portfolios.map((p) => p.id);
+  const rows = db
+    .prepare(
+      `
+      SELECT portfolio_items.*, assets.symbol, assets.name, assets.exchange, assets.currency
+      FROM portfolio_items
+      JOIN assets ON portfolio_items.asset_id = assets.id
+      WHERE portfolio_items.portfolio_id IN (${portfolioIds.map(() => '?').join(',')})
+      ORDER BY portfolio_items.id ASC
+    `
+    )
+    .all(...portfolioIds);
+
+  const symbols = [...new Set(rows.map((row) => row.symbol))];
+  const latest = await getLatestPrices(symbols);
+
+  const grouped = portfolios.map((portfolio) => {
+    const items = rows.filter((row) => row.portfolio_id === portfolio.id);
+    return computePortfolioView(portfolio, items, latest);
+  });
+
+  return res.json({ items: grouped });
+});
+
+app.get('/api/portfolios/:id', authMiddleware, async (req, res) => {
+  const portfolio = db
+    .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!portfolio) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const rows = db
+    .prepare(
+      `
+      SELECT portfolio_items.*, assets.symbol, assets.name, assets.exchange, assets.currency
+      FROM portfolio_items
+      JOIN assets ON portfolio_items.asset_id = assets.id
+      WHERE portfolio_items.portfolio_id = ?
+      ORDER BY portfolio_items.id ASC
+    `
+    )
+    .all(portfolio.id);
+  const symbols = [...new Set(rows.map((row) => row.symbol))];
+  const latest = await getLatestPrices(symbols);
+  const view = computePortfolioView(portfolio, rows, latest);
+  return res.json(view);
+});
+
+app.put('/api/portfolios/:id', authMiddleware, (req, res) => {
+  const schema = z.object({
+    additionalCash: z.number().optional(),
+  });
+  const parse = schema.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload' });
+  }
+
+  const portfolio = db
+    .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!portfolio) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
+  if (parse.data.additionalCash !== undefined) {
+    db.prepare('UPDATE portfolios SET additional_cash = ? WHERE id = ?').run(
+      parse.data.additionalCash,
+      req.params.id
+    );
+  }
+
+  return res.json({ ok: true });
+});
+
+app.post('/api/portfolios/:id/refresh', authMiddleware, async (req, res) => {
+  const portfolio = db
+    .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!portfolio) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const rows = db
+    .prepare(
+      `
+      SELECT portfolio_items.*, assets.symbol, assets.name, assets.exchange, assets.currency
+      FROM portfolio_items
+      JOIN assets ON portfolio_items.asset_id = assets.id
+      WHERE portfolio_items.portfolio_id = ?
+      ORDER BY portfolio_items.id ASC
+    `
+    )
+    .all(portfolio.id);
+  const symbols = [...new Set(rows.map((row) => row.symbol))];
+  const latest = await getLatestPrices(symbols, true); // Force refresh
+  const view = computePortfolioView(portfolio, rows, latest);
+  return res.json(view);
+});
+
+app.put('/api/portfolio-items/:id', authMiddleware, (req, res) => {
+  const schema = z.object({
+    currentQuantity: z.number().nonnegative().optional(),
+    tolerance: z.number().nonnegative().optional(),
+    targetWeight: z.number().nonnegative().optional(),
+    nickname: z.string().optional(),
+  });
+  const parse = schema.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload' });
+  }
+  const item = db
+    .prepare(
+      `
+      SELECT portfolio_items.*, portfolios.user_id
+      FROM portfolio_items
+      JOIN portfolios ON portfolio_items.portfolio_id = portfolios.id
+      WHERE portfolio_items.id = ?
+    `
+    )
+    .get(req.params.id);
+
+  if (!item || item.user_id !== req.user.id) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
+  const updates = [];
+  const values = [];
+  if (parse.data.currentQuantity !== undefined) {
+    updates.push('current_quantity = ?');
+    values.push(parse.data.currentQuantity);
+  }
+  if (parse.data.tolerance !== undefined) {
+    updates.push('tolerance = ?');
+    values.push(parse.data.tolerance);
+  }
+  if (parse.data.targetWeight !== undefined) {
+    updates.push('target_weight = ?');
+    values.push(parse.data.targetWeight);
+  }
+  if (parse.data.nickname !== undefined) {
+    updates.push('nickname = ?');
+    values.push(parse.data.nickname || null);
+  }
+  if (!updates.length) {
+    return res.status(400).json({ error: 'No updates provided' });
+  }
+
+  values.push(req.params.id);
+  db.prepare(`UPDATE portfolio_items SET ${updates.join(', ')} WHERE id = ?`).run(
+    ...values
+  );
+
+  return res.json({ ok: true });
+});
+
+app.post('/api/portfolios/:id/items', authMiddleware, async (req, res) => {
+  const schema = z.object({
+    symbol: z.string().min(1),
+    targetWeight: z.number().positive(),
+    quantity: z.number().nonnegative(),
+    tolerance: z.number().nonnegative().optional(),
+  });
+  const parse = schema.safeParse(req.body);
+  if (!parse.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const portfolio = db
+    .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!portfolio) return res.status(404).json({ error: 'Not found' });
+
+  const symbol = parse.data.symbol.toUpperCase();
+  try {
+    const latest = await getLatestPrices([symbol]);
+    const quote = latest[symbol];
+    const entryPrice = quote?.price ?? null;
+    if (!entryPrice || entryPrice <= 0) {
+      return res.status(400).json({ error: `Invalid price for ${symbol}` });
+    }
+
+    const insertAsset = db.prepare(
+      'INSERT INTO assets (symbol, name, exchange, currency, created_at) VALUES (?, ?, ?, ?, ?)'
+    );
+    const findAsset = db.prepare('SELECT * FROM assets WHERE symbol = ?');
+    let asset = findAsset.get(symbol);
+    if (!asset) {
+      insertAsset.run(
+        symbol,
+        quote?.name || symbol,
+        quote?.exchange || null,
+        quote?.currency || null,
+        nowIso()
+      );
+      asset = findAsset.get(symbol);
+    }
+
+    const insertItem = db.prepare(`
+      INSERT INTO portfolio_items (
+        portfolio_id, asset_id, target_weight, tolerance, entry_price,
+        initial_quantity, current_quantity, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    insertItem.run(
+      portfolio.id,
+      asset.id,
+      parse.data.targetWeight,
+      parse.data.tolerance ?? 0,
+      entryPrice,
+      parse.data.quantity,
+      parse.data.quantity,
+      nowIso()
+    );
+
+    return res.status(201).json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Add item failed' });
+  }
+});
+
+app.delete('/api/portfolio-items/:id', authMiddleware, (req, res) => {
+  const item = db
+    .prepare(
+      `
+      SELECT portfolio_items.*, portfolios.user_id
+      FROM portfolio_items
+      JOIN portfolios ON portfolio_items.portfolio_id = portfolios.id
+      WHERE portfolio_items.id = ?
+    `
+    )
+    .get(req.params.id);
+
+  if (!item || item.user_id !== req.user.id) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
+  db.prepare('DELETE FROM portfolio_items WHERE id = ?').run(req.params.id);
+  return res.json({ ok: true });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server listening on ${PORT}`);
+});

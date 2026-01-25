@@ -1,0 +1,13 @@
+app.get('/api/assets/search', authMiddleware, async (req, res) => {
+  const query = req.query.q;
+  if (!query || typeof query !== 'string') {
+    return res.status(400).json({ error: 'Query required' });
+  }
+  const trimmed = query.trim();
+  if (trimmed.length < 2) {
+    return res.json({ items: [], warning: '검색어를 2글자 이상 입력하세요.' });
+  }
+
+  const result = await searchAssets(db, yahooFinance, trimmed);
+  return res.json(result);
+});
