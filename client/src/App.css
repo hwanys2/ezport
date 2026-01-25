@@ -172,7 +172,7 @@ a.btn-ghost {
   align-items: center;
 }
 
-/* Hamburger button */
+/* Hamburger button - 기본적으로 숨김, 모바일에서만 표시 */
 .hamburger-btn {
   display: none;
   background: transparent;
@@ -181,6 +181,9 @@ a.btn-ghost {
   padding: 8px;
   z-index: 1001;
   position: relative;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
 }
 
 .hamburger-icon {
@@ -213,7 +216,7 @@ a.btn-ghost {
   transform: rotate(-45deg) translate(7px, -7px);
 }
 
-/* Mobile menu overlay */
+/* Mobile menu overlay - 기본적으로 숨김 */
 .mobile-menu-overlay {
   display: none;
   position: fixed;
@@ -225,7 +228,7 @@ a.btn-ghost {
   z-index: 999;
 }
 
-/* Mobile menu */
+/* Mobile menu - 기본적으로 숨김 */
 .mobile-menu {
   display: none;
   position: fixed;
@@ -274,31 +277,69 @@ a.btn-ghost {
   border-color: #cbd5e1;
 }
 
-/* Mobile responsive styles */
-@media (max-width: 768px) {
-  .top-bar {
-    position: relative;
-  }
-
+/* ============================================
+   MOBILE RESPONSIVE STYLES - 768px 이하
+   ============================================ */
+@media screen and (max-width: 768px) {
+  /* 햄버거 버튼 - 모바일에서만 표시 */
+  header.top-bar .hamburger-btn,
+  .top-bar .hamburger-btn,
   .hamburger-btn {
-    display: block !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
     visibility: visible !important;
     opacity: 1 !important;
-    position: relative !important;
-    z-index: 1001 !important;
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px !important;
+    min-height: 40px !important;
   }
 
+  /* 데스크톱 버튼들 - 모바일에서 완전히 숨김 */
+  header.top-bar .top-bar-actions,
+  .top-bar .top-bar-actions,
   .top-bar-actions {
     display: none !important;
     visibility: hidden !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
   }
 
+  /* 모바일 메뉴 오버레이 - 메뉴가 열려있을 때만 표시 (React 조건부 렌더링으로 제어) */
   .mobile-menu-overlay {
-    display: block;
+    display: block !important;
   }
 
+  /* 모바일 메뉴 - 메뉴가 열려있을 때만 표시 (React 조건부 렌더링으로 제어) */
   .mobile-menu {
-    display: flex;
+    display: flex !important;
+  }
+}
+
+/* ============================================
+   DESKTOP STYLES - 769px 이상
+   ============================================ */
+@media screen and (min-width: 769px) {
+  /* 햄버거 버튼 - 데스크톱에서 완전히 숨김 */
+  .hamburger-btn {
+    display: none !important;
+    visibility: hidden !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+
+  /* 모바일 메뉴 관련 요소들 - 데스크톱에서 완전히 숨김 */
+  .mobile-menu-overlay,
+  .mobile-menu {
+    display: none !important;
+    visibility: hidden !important;
   }
 }
 

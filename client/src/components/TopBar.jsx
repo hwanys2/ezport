@@ -33,9 +33,11 @@ export default function TopBar({ user, onLogout }) {
         </button>
       </div>
       <button 
+        type="button"
         className="hamburger-btn"
         onClick={handleMenuToggle}
         aria-label="메뉴 열기"
+        aria-expanded={isMenuOpen}
       >
         <span className={`hamburger-icon ${isMenuOpen ? 'open' : ''}`}>
           <span></span>
