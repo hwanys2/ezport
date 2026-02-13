@@ -146,6 +146,7 @@ function setupSeedWorker(yahooFinance) {
             SET name = $1, name_ko = $2, exchange = $3, currency = $4
             WHERE symbol = $5
           `, result.name, name_ko || null, result.exchange, result.currency, symbol);
+          console.log(`[Seed Worker] Updated assets table: ${symbol} (${result.name})`);
         } else {
           // 새 레코드 삽입 시도 (duplicate key 오류는 조용히 처리)
           try {
@@ -153,6 +154,7 @@ function setupSeedWorker(yahooFinance) {
               INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
               VALUES ($1, $2, $3, $4, $5, $6)
             `, [symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString()], { silentDuplicateKey: true });
+            console.log(`[Seed Worker] Inserted into assets table: ${symbol} (${result.name})`);
           } catch (insertError) {
             // 동시성 문제로 인해 INSERT 실패 시 UPDATE로 전환 (오류 로그 없음)
             if (insertError.message && insertError.message.includes('duplicate key')) {
@@ -161,11 +163,20 @@ function setupSeedWorker(yahooFinance) {
                 SET name = $1, name_ko = $2, exchange = $3, currency = $4
                 WHERE symbol = $5
               `, result.name, name_ko || null, result.exchange, result.currency, symbol);
+              console.log(`[Seed Worker] Updated assets table (after conflict): ${symbol} (${result.name})`);
             } else {
               // 다른 오류는 그대로 throw (로그 출력됨)
               throw insertError;
             }
           }
+        }
+        
+        // 저장 확인: assets 테이블에서 실제로 저장되었는지 확인
+        const verify = await db.get('SELECT symbol, name, exchange, currency FROM assets WHERE symbol = $1', symbol);
+        if (verify) {
+          console.log(`[Seed Worker] Verified in assets: ${JSON.stringify(verify)}`);
+        } else {
+          console.error(`[Seed Worker] WARNING: ${symbol} not found in assets table after insert/update!`);
         }
         
         await db.run(`

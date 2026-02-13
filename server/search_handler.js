@@ -92,7 +92,7 @@ async function searchAssets(db, trimmed) {
   }
 
   // STEP 4: Search assets table (영문 이름, 한글 이름, 심볼)
-  // 대소문자 구분 없이 검색 (name이 NULL일 수 있으므로 COALESCE 사용)
+  // 대소문자 구분 없이 검색
   const upperTrimmed = trimmed.toUpperCase();
   const upperLike = `%${upperTrimmed}%`;
   const assetsResults = await db.all(
@@ -119,6 +119,11 @@ async function searchAssets(db, trimmed) {
     upperTrimmed, upperTrimmed, trimmed,
     `${upperTrimmed}%`, `${upperTrimmed}%`, `${trimmed}%`
   );
+  
+  console.log(`[Search] assets table query for "${trimmed}": found ${assetsResults.length} results`);
+  if (assetsResults.length > 0) {
+    console.log(`[Search] Sample results:`, assetsResults.slice(0, 3).map(r => r.symbol));
+  }
 
   assetsResults.forEach((asset) => {
     results.push({
