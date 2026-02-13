@@ -20,7 +20,6 @@ if (!fs.existsSync(sqlitePath)) {
 }
 
 // PostgreSQL 연결 설정
-// Railway의 공개 연결 문자열 사용 (내부 호스트명은 로컬에서 접근 불가)
 let connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 
 if (!connectionString) {
@@ -29,12 +28,18 @@ if (!connectionString) {
   process.exit(1);
 }
 
-// Railway 내부 호스트명을 공개 호스트명으로 변경
-if (connectionString.includes('postgres.railway.internal')) {
-  console.warn('[Migration] 내부 호스트명 감지. Railway의 공개 연결 문자열을 사용하세요.');
-  console.warn('[Migration] Railway 대시보드 → PostgreSQL → Connect → Public Network');
+// Railway CLI 환경 확인 (RAILWAY_ENVIRONMENT 변수 존재 여부)
+const isRailwayCLI = !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RAILWAY_PROJECT_ID;
+
+// 내부 호스트명 감지 시 경고 (로컬 환경에서만)
+if (connectionString.includes('postgres.railway.internal') && !isRailwayCLI) {
+  console.warn('[Migration] 내부 호스트명 감지. Railway CLI를 사용하거나 공개 연결 문자열을 사용하세요.');
+  console.warn('[Migration] Railway CLI 사용: railway run npm run migrate:postgres');
+  console.warn('[Migration] 또는 Railway 대시보드 → PostgreSQL → Connect → Public Network');
   process.exit(1);
 }
+
+console.log('[Migration] 연결 문자열:', connectionString.replace(/:[^:@]+@/, ':****@')); // 비밀번호 숨김
 
 const pgPool = new Pool({
   connectionString: connectionString,
