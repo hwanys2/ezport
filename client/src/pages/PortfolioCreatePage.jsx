@@ -21,6 +21,17 @@ export default function PortfolioCreatePage({ user, onLogout }) {
   const [items, setItems] = useState([emptyItem()])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [addRequestingIndex, setAddRequestingIndex] = useState(-1)
+  const [lastSearchedQueries, setLastSearchedQueries] = useState({})
+
+  const hasExactTickerMatch = (query, results) => {
+    const q = (query || '').trim().toUpperCase()
+    if (!q) return false
+    return (results || []).some((r) => {
+      const s = (r.symbol || '').trim().toUpperCase()
+      return s === q || s === `${q}.KS` || s === `${q}.KQ`
+    })
+  }
 
   const totalTargetWeight = useMemo(
     () => items.reduce((sum, item) => sum + Number(item.targetWeight || 0), 0),
@@ -44,9 +55,11 @@ export default function PortfolioCreatePage({ user, onLogout }) {
     if (!query) return
     try {
       const data = await apiFetch(`/api/assets/search?q=${encodeURIComponent(query)}`, { token })
+      setLastSearchedQueries((prev) => ({ ...prev, [index]: query }))
       handleItemChange(index, 'searchResults', data.items || [])
       handleItemChange(index, 'searchWarning', data.warning || '')
     } catch {
+      setLastSearchedQueries((prev) => ({ ...prev, [index]: query }))
       handleItemChange(index, 'searchResults', [])
       handleItemChange(index, 'searchWarning', '검색에 실패했습니다. 티커/코드로 다시 시도해 주세요.')
     }
@@ -64,6 +77,30 @@ export default function PortfolioCreatePage({ user, onLogout }) {
       }
       return next
     })
+    setLastSearchedQueries((prev) => {
+      const next = { ...prev }
+      delete next[index]
+      return next
+    })
+  }
+
+  const requestAddTicker = async (index) => {
+    const query = items[index]?.searchQuery?.trim()
+    if (!query || addRequestingIndex >= 0) return
+    setAddRequestingIndex(index)
+    try {
+      const token = getToken()
+      await apiFetch('/api/queue/add-symbol', {
+        token,
+        method: 'POST',
+        body: { symbol: query },
+      })
+      handleItemChange(index, 'searchWarning', '종목 등록 요청이 큐에 추가되었습니다. 전체 사용자 요청이 순차적으로 15초 간격으로 처리됩니다. 처리 후 다시 검색해 보시면 등록 여부를 확인할 수 있습니다.')
+    } catch (err) {
+      handleItemChange(index, 'searchWarning', err.message || '티커 추가 요청에 실패했습니다.')
+    } finally {
+      setAddRequestingIndex(-1)
+    }
   }
 
   const submit = async (e) => {
@@ -179,7 +216,7 @@ export default function PortfolioCreatePage({ user, onLogout }) {
                     </div>
                   </label>
                   <label>
-                    티커/심볼
+                    티커(종목코드)
                     <input
                       value={item.symbol}
                       onChange={(e) => handleItemChange(index, 'symbol', e.target.value.toUpperCase())}
@@ -218,29 +255,55 @@ export default function PortfolioCreatePage({ user, onLogout }) {
                   </label>
                 </div>
 
-                {item.searchResults.length > 0 && (
-                  <div className="search-results">
-                    {item.searchResults.map((result) => (
-                      <button
-                        type="button"
-                        key={result.symbol}
-                        className="search-result"
-                        onClick={() => selectAsset(index, result)}
-                      >
-                        <div className="search-result-main">
-                          <strong className="search-result-symbol">{result.symbol}</strong>
-                          <span className="search-result-name">
-                            {result.name_ko || result.name || result.symbol}
-                          </span>
-                        </div>
-                        {result.name_ko && result.name && result.name !== result.name_ko && (
-                          <div className="search-result-name-en">{result.name}</div>
-                        )}
-                      </button>
-                    ))}
+                {lastSearchedQueries[index] === item.searchQuery?.trim() && !hasExactTickerMatch(item.searchQuery?.trim(), item.searchResults) && (
+                  <div className="search-no-results">
+                    <p className="search-no-results-title">입력한 티커와 동일한 종목이 없습니다</p>
+                    <p className="search-no-results-text">
+                      야후 파이낸스 정식 티커만 등록할 수 있습니다. 한국 주식은 6자리 종목코드 + <strong>.KS</strong>(코스피) 또는 <strong>.KQ</strong>(코스닥), 미국 주식은 영문 티커(예: AAPL)를 사용하세요.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn-add-ticker-request"
+                      onClick={() => requestAddTicker(index)}
+                      disabled={addRequestingIndex >= 0}
+                    >
+                      {addRequestingIndex === index ? '요청 중...' : '티커 추가요청하기'}
+                    </button>
+                    <p className="search-no-results-hint">등록 요청은 전체 시스템에서 15초 간격으로 순차 처리됩니다. 처리 후 다시 검색하면 등록 여부를 확인할 수 있습니다.</p>
                   </div>
                 )}
-                {item.searchWarning && <div className="search-warning">{item.searchWarning}</div>}
+                {item.searchWarning && (
+                  <div className={`search-warning search-warning-below-request ${item.searchWarning.includes('큐에 추가') ? 'search-warning-success' : ''}`}>{item.searchWarning}</div>
+                )}
+                {item.searchResults.length > 0 && (
+                  <div className="search-results-wrap search-results-fullwidth">
+                    <p className="search-results-label">
+                      {hasExactTickerMatch(item.searchQuery?.trim(), item.searchResults)
+                        ? '티커 일치 · 검색 결과'
+                        : '이름/티커 포함 검색 결과'}
+                    </p>
+                    <div className="search-results-grid">
+                      {item.searchResults.map((result) => (
+                        <button
+                          type="button"
+                          key={result.symbol}
+                          className="search-result search-result-item"
+                          onClick={() => selectAsset(index, result)}
+                        >
+                          <div className="search-result-main">
+                            <strong className="search-result-symbol">{result.symbol}</strong>
+                            <span className="search-result-name">
+                              {result.name_ko || result.name || result.symbol}
+                            </span>
+                          </div>
+                          {result.name_ko && result.name && result.name !== result.name_ko && (
+                            <div className="search-result-name-en">{result.name}</div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="item-footer">
                   <span className="muted">{item.name}</span>

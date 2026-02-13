@@ -7,6 +7,9 @@ export default function QueueStatusPage({ user, onLogout }) {
   const [queueStatus, setQueueStatus] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [symbolInput, setSymbolInput] = useState('')
+  const [addingSymbol, setAddingSymbol] = useState(false)
+  const [addMessage, setAddMessage] = useState('')
 
   const fetchQueueStatus = async () => {
     try {
@@ -29,6 +32,38 @@ export default function QueueStatusPage({ user, onLogout }) {
     const interval = setInterval(fetchQueueStatus, 5000) // 5초마다 갱신
     return () => clearInterval(interval)
   }, [])
+
+  const handleAddSymbol = async (e) => {
+    e.preventDefault()
+    if (!symbolInput.trim()) {
+      setAddMessage('종목 코드를 입력해주세요.')
+      return
+    }
+
+    try {
+      setAddingSymbol(true)
+      setAddMessage('')
+      const token = getToken()
+      const data = await apiFetch('/api/queue/add-symbol', {
+        token,
+        method: 'POST',
+        body: { symbol: symbolInput.trim() },
+      })
+      
+      setAddMessage(`✓ ${data.symbol}${data.name_ko ? ` (${data.name_ko})` : ''} 종목이 큐에 추가되었습니다.`)
+      setSymbolInput('')
+      
+      // 큐 상태 새로고침
+      setTimeout(() => {
+        fetchQueueStatus()
+      }, 1000)
+    } catch (err) {
+      console.error('[Add Symbol] Error:', err)
+      setAddMessage(err.message || '종목 추가에 실패했습니다.')
+    } finally {
+      setAddingSymbol(false)
+    }
+  }
 
   const formatTime = (isoString) => {
     if (!isoString) return '-'
@@ -145,6 +180,35 @@ export default function QueueStatusPage({ user, onLogout }) {
           <button onClick={fetchQueueStatus} className="btn-primary" disabled={loading}>
             {loading ? '새로고침 중...' : '새로고침'}
           </button>
+        </div>
+
+        <div className="add-symbol-section">
+          <h2>신규 종목 추가</h2>
+          <p className="subtitle">빠진 종목이나 신규 상장 종목을 추가할 수 있습니다</p>
+          <form onSubmit={handleAddSymbol} className="add-symbol-form">
+            <div className="form-group">
+              <input
+                type="text"
+                value={symbolInput}
+                onChange={(e) => setSymbolInput(e.target.value)}
+                placeholder="종목 코드 입력 (예: 005930, AAPL, 005930.KS)"
+                className="form-input"
+                disabled={addingSymbol}
+              />
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={addingSymbol || !symbolInput.trim()}
+              >
+                {addingSymbol ? '추가 중...' : '종목 추가'}
+              </button>
+            </div>
+            {addMessage && (
+              <div className={`toast ${addMessage.startsWith('✓') ? 'success' : 'error'}`}>
+                {addMessage}
+              </div>
+            )}
+          </form>
         </div>
 
         {error && <div className="toast error">{error}</div>}

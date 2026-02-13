@@ -4,11 +4,18 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const yahooFinanceModule = require('yahoo-finance2');
 const { z } = require('zod');
+const path = require('path');
 const { db, initDb } = require('./db');
 const { hasAnyListings, searchByAny } = require('./krx');
 const { searchAssets } = require('./search_handler');
-const { priceUpdateQueue, exchangeRateQueue, seedQueue } = require('./queue');
-const { setupPriceUpdateWorker, setupExchangeRateWorker, setupSeedWorker } = require('./workers');
+const { priceUpdateQueue, exchangeRateQueue, seedQueue, marketIndexQueue } = require('./queue');
+const {
+  setupPriceUpdateWorker,
+  setupExchangeRateWorker,
+  setupSeedWorker,
+  setupMarketIndexWorker,
+} = require('./workers');
+const { MARKET_INDICES } = require('./market_indices');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -17,7 +24,10 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
 initDb();
 
 const YahooFinanceCtor = yahooFinanceModule?.default || yahooFinanceModule;
-const yahooFinance = new YahooFinanceCtor({ suppressNotices: ['yahooSurvey'] });
+const yahooFinance = new YahooFinanceCtor({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
+
+const MARKET_INDEX_CACHE_MINUTES = 60;
+const selectAllIndexMetricsStmt = db.prepare('SELECT * FROM index_metrics');
 
 // 서버 시작 시 큐 상태 확인 및 워커 시작 (큐 작업은 이어서 실행)
 (async () => {
@@ -25,16 +35,19 @@ const yahooFinance = new YahooFinanceCtor({ suppressNotices: ['yahooSurvey'] });
     const seedCounts = await seedQueue.getJobCounts();
     const priceCounts = await priceUpdateQueue.getJobCounts();
     const exchangeCounts = await exchangeRateQueue.getJobCounts();
+    const marketIndexCounts = await marketIndexQueue.getJobCounts();
     
     const totalSeed = seedCounts.waiting + seedCounts.active + seedCounts.delayed;
     const totalPrice = priceCounts.waiting + priceCounts.active + priceCounts.delayed;
     const totalExchange = exchangeCounts.waiting + exchangeCounts.active + exchangeCounts.delayed;
+    const totalMarketIndex = marketIndexCounts.waiting + marketIndexCounts.active + marketIndexCounts.delayed;
     
-    if (totalSeed > 0 || totalPrice > 0 || totalExchange > 0) {
+    if (totalSeed > 0 || totalPrice > 0 || totalExchange > 0 || totalMarketIndex > 0) {
       console.log(`[Init] 큐 상태 확인:`);
       console.log(`  - Seed: ${seedCounts.waiting} 대기, ${seedCounts.active} 실행 중, ${seedCounts.delayed} 지연`);
       console.log(`  - Price Update: ${priceCounts.waiting} 대기, ${priceCounts.active} 실행 중, ${priceCounts.delayed} 지연`);
       console.log(`  - Exchange Rate: ${exchangeCounts.waiting} 대기, ${exchangeCounts.active} 실행 중, ${exchangeCounts.delayed} 지연`);
+      console.log(`  - Market Index: ${marketIndexCounts.waiting} 대기, ${marketIndexCounts.active} 실행 중, ${marketIndexCounts.delayed} 지연`);
       console.log(`[Init] 워커 시작 - 큐에 남아있는 작업들이 이어서 실행됩니다.`);
     } else {
       console.log('[Init] 모든 큐가 비어있습니다.');
@@ -44,12 +57,14 @@ const yahooFinance = new YahooFinanceCtor({ suppressNotices: ['yahooSurvey'] });
     setupPriceUpdateWorker(yahooFinance);
     setupExchangeRateWorker(yahooFinance);
     setupSeedWorker(yahooFinance);
+    setupMarketIndexWorker(yahooFinance);
   } catch (error) {
     console.warn('[Init] 큐 상태 확인 중 오류:', error?.message);
     // 에러가 발생해도 워커는 시작
     setupPriceUpdateWorker(yahooFinance);
     setupExchangeRateWorker(yahooFinance);
     setupSeedWorker(yahooFinance);
+    setupMarketIndexWorker(yahooFinance);
   }
 })();
 
@@ -75,6 +90,69 @@ const checkExchangeRate = () => {
   }
 };
 checkExchangeRate();
+
+async function queueMarketIndexUpdate(symbol) {
+  try {
+    const existingJob = await marketIndexQueue.getJob(symbol);
+    if (existingJob) {
+      const state = await existingJob.getState();
+      if (state === 'failed') {
+        await existingJob.remove();
+      } else if (state !== 'completed') {
+        return { queued: false, state };
+      }
+    }
+
+    const job = await marketIndexQueue.add(
+      { symbol },
+      {
+        jobId: symbol,
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      }
+    );
+
+    return { queued: true, state: 'waiting', jobId: job.id };
+  } catch (error) {
+    console.error(`[Market Index Queue] Failed to enqueue ${symbol}:`, error?.message || error);
+    return { queued: false, error: error?.message || 'enqueue-failed' };
+  }
+}
+
+async function checkMarketIndices() {
+  try {
+    const rows = selectAllIndexMetricsStmt.all();
+    const rowMap = new Map(rows.map((row) => [row.symbol, row]));
+    const now = Date.now();
+    const threshold = now - MARKET_INDEX_CACHE_MINUTES * 60 * 1000;
+
+    await Promise.all(
+      MARKET_INDICES.map(async (indexInfo) => {
+        const row = rowMap.get(indexInfo.symbol);
+        if (!row) {
+          console.log(`[Init] Market index ${indexInfo.shortLabel} (${indexInfo.symbol}) not cached, enqueue update...`);
+          await queueMarketIndexUpdate(indexInfo.symbol);
+          return;
+        }
+
+        const updatedAt = row.updated_at ? new Date(row.updated_at).getTime() : 0;
+        if (!updatedAt || updatedAt < threshold) {
+          console.log(`[Init] Market index ${indexInfo.shortLabel} (${indexInfo.symbol}) stale, enqueue update...`);
+          await queueMarketIndexUpdate(indexInfo.symbol);
+        }
+      })
+    );
+  } catch (error) {
+    console.warn('[Init] 시장 지수 확인 중 오류:', error?.message || error);
+  }
+}
+
+checkMarketIndices();
 
 app.use(cors());
 app.use(express.json());
@@ -169,6 +247,7 @@ async function getLatestPrices(symbols, forceRefresh = false, context = '') {
         name: cached.name,
         exchange: cached.exchange,
         currency: cached.currency,
+        updated_at: cached.updated_at || null,
       };
       
       const updatedAt = cached.updated_at ? new Date(cached.updated_at) : null;
@@ -249,6 +328,7 @@ function computePortfolioView(portfolio, items, latestPrices) {
       latest_price_krw: priceInKrw,
       currency: currency,
       current_value: value,
+      latest_price_updated_at: latest.updated_at ?? null,
     };
   });
 
@@ -291,6 +371,103 @@ function computePortfolioView(portfolio, items, latestPrices) {
     items: finalItems,
   };
 }
+
+app.get('/api/market-indices', authMiddleware, async (req, res) => {
+  try {
+    const now = new Date();
+    const nowMs = now.getTime();
+    const rows = selectAllIndexMetricsStmt.all();
+    const rowMap = new Map(rows.map((row) => [row.symbol, row]));
+    const staleSymbols = new Set();
+
+    const items = MARKET_INDICES.map((indexInfo) => {
+      const row = rowMap.get(indexInfo.symbol);
+      const base = {
+        slug: indexInfo.slug,
+        symbol: indexInfo.symbol,
+        label: indexInfo.label,
+        shortLabel: indexInfo.shortLabel,
+        region: indexInfo.region,
+        currentPrice: null,
+        high3y: null,
+        percentDrop: null,
+        currency: null,
+        exchange: null,
+        updatedAt: null,
+        isStale: true,
+        isUpdating: false,
+      };
+
+      if (row) {
+        const updatedAt = row.updated_at || null;
+        const updatedMs = updatedAt ? new Date(updatedAt).getTime() : 0;
+        const isStale = !updatedMs || updatedMs < (nowMs - MARKET_INDEX_CACHE_MINUTES * 60 * 1000);
+
+        base.currentPrice = row.current_price ?? null;
+        base.high3y = row.high_3y ?? null;
+        base.percentDrop =
+          typeof row.percent_drop === 'number' && !Number.isNaN(row.percent_drop)
+            ? row.percent_drop
+            : (row.current_price != null && row.high_3y > 0
+                ? ((row.current_price / row.high_3y) - 1) * 100
+                : null);
+        base.currency = row.currency || null;
+        base.exchange = row.exchange || null;
+        base.updatedAt = updatedAt;
+        base.isStale = isStale;
+
+        if (isStale) {
+          staleSymbols.add(indexInfo.symbol);
+        }
+      } else {
+        staleSymbols.add(indexInfo.symbol);
+      }
+
+      return base;
+    });
+
+    if (staleSymbols.size > 0) {
+      await Promise.all(Array.from(staleSymbols).map((symbol) => queueMarketIndexUpdate(symbol)));
+    }
+
+    const jobStates = await Promise.all(
+      MARKET_INDICES.map(async (indexInfo) => {
+        const job = await marketIndexQueue.getJob(indexInfo.symbol);
+        if (!job) return [indexInfo.symbol, null];
+        try {
+          const state = await job.getState();
+          return [indexInfo.symbol, state];
+        } catch (error) {
+          console.warn(`[Market Index Queue] Failed to read state for ${indexInfo.symbol}:`, error?.message || error);
+          return [indexInfo.symbol, null];
+        }
+      })
+    );
+
+    const jobStateMap = new Map(jobStates);
+    const decoratedItems = items.map((item) => {
+      const state = jobStateMap.get(item.symbol);
+      const isUpdating = state === 'waiting' || state === 'active' || state === 'delayed';
+      return {
+        ...item,
+        isUpdating,
+      };
+    });
+
+    res.json({
+      items: decoratedItems,
+      staleSymbols: Array.from(staleSymbols),
+      requestedAt: now.toISOString(),
+      cacheWindowMinutes: MARKET_INDEX_CACHE_MINUTES,
+    });
+  } catch (error) {
+    console.error('[Market Indices] Failed to load metrics:', error?.message || error);
+    res.status(500).json({
+      error: 'Failed to fetch market index metrics',
+      details: error?.message || 'unknown-error',
+    });
+  }
+});
 
 app.post('/api/auth/register', async (req, res) => {
   const schema = z.object({
@@ -537,6 +714,7 @@ app.get('/api/portfolios', authMiddleware, async (req, res) => {
         name: cached.name,
         exchange: cached.exchange,
         currency: cached.currency,
+        updated_at: cached.updated_at || null,
       };
     }
   });
@@ -558,13 +736,18 @@ app.get('/api/portfolios', authMiddleware, async (req, res) => {
 app.get('/api/portfolios/public', async (req, res) => {
   const limit = parseInt(req.query.limit) || 6;
   
-  // 공개 포트폴리오 랜덤 조회
+  // 공개 포트폴리오 랜덤 조회 (종목 3개 이상인 포트폴리오만)
   const portfolios = db
     .prepare(`
       SELECT portfolios.*, users.email
       FROM portfolios
       JOIN users ON portfolios.user_id = users.id
       WHERE portfolios.is_public = 1
+        AND (
+          SELECT COUNT(*)
+          FROM portfolio_items
+          WHERE portfolio_items.portfolio_id = portfolios.id
+        ) >= 3
       ORDER BY RANDOM()
       LIMIT ?
     `)
@@ -602,6 +785,7 @@ app.get('/api/portfolios/public', async (req, res) => {
         name: cached.name,
         exchange: cached.exchange,
         currency: cached.currency,
+        updated_at: cached.updated_at || null,
       };
     }
   });
@@ -653,6 +837,8 @@ app.get('/api/portfolios/:id', authMiddleware, async (req, res) => {
 
 app.put('/api/portfolios/:id', authMiddleware, (req, res) => {
   const schema = z.object({
+    name: z.string().min(1).optional(),
+    memo: z.string().optional(),
     additionalCash: z.number().optional(),
     isPublic: z.boolean().optional(),
   });
@@ -666,6 +852,20 @@ app.put('/api/portfolios/:id', authMiddleware, (req, res) => {
     .get(req.params.id, req.user.id);
   if (!portfolio) {
     return res.status(404).json({ error: 'Not found' });
+  }
+
+  if (parse.data.name !== undefined) {
+    db.prepare('UPDATE portfolios SET name = ? WHERE id = ?').run(
+      parse.data.name,
+      req.params.id
+    );
+  }
+
+  if (parse.data.memo !== undefined) {
+    db.prepare('UPDATE portfolios SET memo = ? WHERE id = ?').run(
+      parse.data.memo || null,
+      req.params.id
+    );
   }
 
   if (parse.data.additionalCash !== undefined) {
@@ -883,6 +1083,95 @@ app.delete('/api/portfolio-items/:id', authMiddleware, (req, res) => {
   return res.json({ ok: true });
 });
 
+// 종목 코드를 큐에 추가하는 API
+app.post('/api/queue/add-symbol', authMiddleware, async (req, res) => {
+  try {
+    const { symbol } = req.body;
+    
+    if (!symbol || typeof symbol !== 'string') {
+      return res.status(400).json({ error: '종목 코드를 입력해주세요.' });
+    }
+    
+    const trimmed = symbol.trim().toUpperCase();
+    if (!trimmed) {
+      return res.status(400).json({ error: '종목 코드를 입력해주세요.' });
+    }
+    
+    // 이미 .KS 또는 .KQ가 포함되어 있는지 확인
+    const hasSuffix = trimmed.includes('.KS') || trimmed.includes('.KQ');
+    let code = trimmed;
+    let yahoo_suffix = null;
+    let name_ko = null;
+    let market = null;
+    
+    if (hasSuffix) {
+      // 이미 suffix가 있는 경우 (예: 005930.KS, 005930.KQ)
+      const parts = trimmed.split('.');
+      code = parts[0];
+      yahoo_suffix = parts[1];
+      
+      // 6자리 숫자인지 확인
+      if (/^\d{6}$/.test(code)) {
+        // krx_listings에서 정보 확인
+        const listing = db.prepare('SELECT code, name_ko, market, yahoo_suffix FROM krx_listings WHERE code = ?').get(code.padStart(6, '0'));
+        if (listing) {
+          name_ko = listing.name_ko;
+          market = listing.market;
+          yahoo_suffix = listing.yahoo_suffix || yahoo_suffix;
+        }
+      }
+    } else if (/^\d{6}$/.test(trimmed)) {
+      // 6자리 숫자면 한국 주식으로 처리
+      code = trimmed.padStart(6, '0');
+      const listing = db.prepare('SELECT code, name_ko, market, yahoo_suffix FROM krx_listings WHERE code = ?').get(code);
+      if (listing) {
+        name_ko = listing.name_ko;
+        market = listing.market;
+        yahoo_suffix = listing.yahoo_suffix || 'KS'; // 기본값 KS
+      } else {
+        // krx_listings에 없으면 기본값으로 처리
+        yahoo_suffix = 'KS';
+      }
+    } else {
+      // 그 외는 미국 주식으로 처리
+      code = trimmed;
+      yahoo_suffix = null;
+    }
+    
+    // seedQueue에 작업 추가
+    const job = await seedQueue.add(
+      {
+        code,
+        name_ko,
+        market,
+        yahoo_suffix,
+      },
+      {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      }
+    );
+    
+    console.log(`[Add Symbol] Added to queue: ${code}${yahoo_suffix ? '.' + yahoo_suffix : ''} (${name_ko || code})`);
+    
+    return res.json({
+      ok: true,
+      message: '종목이 큐에 추가되었습니다.',
+      jobId: job.id,
+      symbol: yahoo_suffix ? `${code}.${yahoo_suffix}` : code,
+      name_ko: name_ko || null,
+    });
+  } catch (error) {
+    console.error('[Add Symbol] Error:', error);
+    return res.status(500).json({ error: '종목 추가 중 오류가 발생했습니다.', details: error.message });
+  }
+});
+
 // 큐 상태 확인 API
 app.get('/api/queue/status', authMiddleware, async (req, res) => {
   try {
@@ -907,10 +1196,18 @@ app.get('/api/queue/status', authMiddleware, async (req, res) => {
       exchangeRateQueue.getFailed(0, 10).catch(() => []),
     ]);
 
-    const [priceCounts, seedCounts, exchangeCounts] = await Promise.all([
+    const [marketIndexWaiting, marketIndexActive, marketIndexCompleted, marketIndexFailed] = await Promise.all([
+      marketIndexQueue.getWaiting().catch(() => []),
+      marketIndexQueue.getActive().catch(() => []),
+      marketIndexQueue.getCompleted(0, 10).catch(() => []),
+      marketIndexQueue.getFailed(0, 10).catch(() => []),
+    ]);
+
+    const [priceCounts, seedCounts, exchangeCounts, marketIndexCounts] = await Promise.all([
       priceUpdateQueue.getJobCounts().catch(() => ({ waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 })),
       seedQueue.getJobCounts().catch(() => ({ waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 })),
       exchangeRateQueue.getJobCounts().catch(() => ({ waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 })),
+      marketIndexQueue.getJobCounts().catch(() => ({ waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 })),
     ]);
 
     return res.json({
@@ -986,12 +1283,47 @@ app.get('/api/queue/status', authMiddleware, async (req, res) => {
           error: job.failedReason || 'Unknown error',
         })),
       },
+      marketIndex: {
+        counts: marketIndexCounts,
+        waiting: marketIndexWaiting.map(job => ({
+          id: job.id,
+          symbol: job.data?.symbol || 'N/A',
+          timestamp: job.timestamp ? new Date(job.timestamp).toISOString() : new Date().toISOString(),
+        })),
+        active: marketIndexActive.map(job => ({
+          id: job.id,
+          symbol: job.data?.symbol || 'N/A',
+          timestamp: job.timestamp ? new Date(job.timestamp).toISOString() : new Date().toISOString(),
+        })),
+        recentCompleted: marketIndexCompleted.map(job => ({
+          id: job.id,
+          symbol: job.data?.symbol || 'N/A',
+          completed: job.finishedOn ? new Date(job.finishedOn).toISOString() : new Date(job.timestamp).toISOString(),
+        })),
+        recentFailed: marketIndexFailed.map(job => ({
+          id: job.id,
+          symbol: job.data?.symbol || 'N/A',
+          failed: job.finishedOn ? new Date(job.finishedOn).toISOString() : new Date(job.timestamp).toISOString(),
+          error: job.failedReason || 'Unknown error',
+        })),
+      },
     });
   } catch (error) {
     console.error('[Queue Status] Error:', error);
     return res.status(500).json({ error: 'Failed to get queue status', details: error.message });
   }
 });
+
+// 클라이언트 정적 파일 서빙 (프로덕션 환경) - API 라우트 이후에 배치
+if (process.env.NODE_ENV === 'production') {
+  const clientDistPath = path.join(__dirname, '../client/dist');
+  app.use(express.static(clientDistPath));
+  
+  // API가 아닌 모든 요청은 클라이언트로 라우팅 (SPA 라우팅 지원)
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(clientDistPath, 'index.html'));
+  });
+}
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on 0.0.0.0:${PORT}`);

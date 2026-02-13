@@ -25,12 +25,26 @@ export default function PortfolioDetailPage({ user, onLogout }) {
   const [editingCash, setEditingCash] = useState(false)
   const [additionalCash, setAdditionalCash] = useState(0)
   const [isPublic, setIsPublic] = useState(false)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [title, setTitle] = useState('')
+  const [memo, setMemo] = useState('')
 
   // Add item state
   const [showAddForm, setShowAddForm] = useState(false)
   const [newItem, setNewItem] = useState(emptyItem())
+  const [lastSearchedQuery, setLastSearchedQuery] = useState('')
+  const [addRequesting, setAddRequesting] = useState(false)
 
   const token = getToken()
+
+  const hasExactTickerMatch = (query, results) => {
+    const q = (query || '').trim().toUpperCase()
+    if (!q) return false
+    return (results || []).some((r) => {
+      const s = (r.symbol || '').trim().toUpperCase()
+      return s === q || s === `${q}.KS` || s === `${q}.KQ`
+    })
+  }
 
   const fetchPortfolio = async () => {
     try {
@@ -38,6 +52,8 @@ export default function PortfolioDetailPage({ user, onLogout }) {
       setPortfolio(data)
       setAdditionalCash(data.additional_cash ?? 0)
       setIsPublic(data.is_public === 1)
+      setTitle(data.name || '')
+      setMemo(data.memo || '')
       const initialValues = {}
       data.items.forEach((item) => {
         initialValues[item.id] = {
@@ -81,6 +97,23 @@ export default function PortfolioDetailPage({ user, onLogout }) {
       setIsPublic(newValue)
     } catch {
       setError('공개 설정 변경 실패')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSaveTitleAndMemo = async () => {
+    setLoading(true)
+    try {
+      await apiFetch(`/api/portfolios/${id}`, {
+        token,
+        method: 'PUT',
+        body: { name: title.trim(), memo: memo.trim() || null },
+      })
+      setEditingTitle(false)
+      await fetchPortfolio()
+    } catch {
+      setError('제목/메모 저장 실패')
     } finally {
       setLoading(false)
     }
@@ -239,12 +272,14 @@ export default function PortfolioDetailPage({ user, onLogout }) {
         `/api/assets/search?q=${encodeURIComponent(query)}`,
         { token }
       )
+      setLastSearchedQuery(query)
       setNewItem((prev) => ({
         ...prev,
         searchResults: data.items || [],
         searchWarning: data.warning || '',
       }))
     } catch {
+      setLastSearchedQuery(query)
       setNewItem((prev) => ({
         ...prev,
         searchResults: [],
@@ -261,6 +296,28 @@ export default function PortfolioDetailPage({ user, onLogout }) {
       searchResults: [],
       searchWarning: '',
     }))
+    setLastSearchedQuery('')
+  }
+
+  const requestAddTicker = async () => {
+    const symbol = newItem.searchQuery?.trim()
+    if (!symbol || addRequesting) return
+    setAddRequesting(true)
+    try {
+      await apiFetch('/api/queue/add-symbol', {
+        token,
+        method: 'POST',
+        body: { symbol },
+      })
+      setNewItem((prev) => ({
+        ...prev,
+        searchWarning: '종목 등록 요청이 큐에 추가되었습니다. 전체 사용자 요청이 순차적으로 15초 간격으로 처리됩니다. 처리 후 다시 검색해 보시면 등록 여부를 확인할 수 있습니다.',
+      }))
+    } catch (err) {
+      setNewItem((prev) => ({ ...prev, searchWarning: err.message || '티커 추가 요청에 실패했습니다.' }))
+    } finally {
+      setAddRequesting(false)
+    }
   }
 
   if (!portfolio) return null
@@ -299,6 +356,24 @@ export default function PortfolioDetailPage({ user, onLogout }) {
     }).format(num)
   }
 
+  /** 현재가가 마지막으로 업데이트된 시점 표시: 1시간 이내 / N시간전 (업데이트가 진행중입니다.) / N일전 (업데이트가 진행중입니다.) */
+  const formatPriceUpdatedAt = (isoString) => {
+    if (!isoString) return null
+    const updated = new Date(isoString)
+    const now = new Date()
+    const diffMs = now - updated
+    const diffMinutes = diffMs / (1000 * 60)
+    const diffHours = diffMs / (1000 * 60 * 60)
+    const diffDays = diffMs / (1000 * 60 * 60 * 24)
+    if (diffMinutes < 60) return '1시간 이내'
+    if (diffHours < 24) {
+      const hours = Math.floor(diffHours)
+      return `${hours}시간전 (업데이트가 진행중입니다.)`
+    }
+    const days = Math.floor(diffDays)
+    return `${days}일전 (업데이트가 진행중입니다.)`
+  }
+
   return (
     <div className="page">
       <TopBar user={user} onLogout={onLogout} />
@@ -308,7 +383,64 @@ export default function PortfolioDetailPage({ user, onLogout }) {
           <button className="back-button" onClick={() => navigate('/portfolios')}>
             ← 목록
           </button>
-          <h1>{portfolio.name}</h1>
+          <div className="portfolio-title-section">
+            {editingTitle ? (
+              <div className="title-edit-form">
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="title-input"
+                  placeholder="포트폴리오 제목"
+                  autoFocus
+                />
+                <textarea
+                  value={memo}
+                  onChange={(e) => setMemo(e.target.value)}
+                  className="memo-input"
+                  placeholder="포트폴리오 목적이나 메모를 입력하세요..."
+                  rows={3}
+                />
+                <div className="title-edit-actions">
+                  <button
+                    className="icon-btn success"
+                    onClick={handleSaveTitleAndMemo}
+                    disabled={loading || !title.trim()}
+                    title="저장"
+                  >
+                    ✓
+                  </button>
+                  <button
+                    className="icon-btn"
+                    onClick={() => {
+                      setEditingTitle(false)
+                      setTitle(portfolio.name || '')
+                      setMemo(portfolio.memo || '')
+                    }}
+                    title="취소"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="portfolio-title-display">
+                <h1>
+                  {portfolio.name}
+                  <button
+                    className="icon-btn edit-title-btn"
+                    onClick={() => setEditingTitle(true)}
+                    title="제목/메모 수정"
+                  >
+                    ✏️
+                  </button>
+                </h1>
+                {portfolio.memo && (
+                  <p className="portfolio-memo">{portfolio.memo}</p>
+                )}
+              </div>
+            )}
+          </div>
           <div className="detail-header-actions">
             <div className="public-toggle-compact">
               <span className="public-toggle-label">공개</span>
@@ -375,6 +507,15 @@ export default function PortfolioDetailPage({ user, onLogout }) {
           </div>
         </div>
 
+        <div className="detail-info-banner">
+          <p className="detail-info-main">
+            본 페이지에 접속하면 이 포트폴리오의 종목 현재가 업데이트가 자동으로 시작됩니다.
+          </p>
+          <p className="detail-info-sub">
+            최근 1시간 이내에 조회된 종목은 그대로 유지되며, 그 외 종목은 최대 1~2분 안에 순차적으로 업데이트됩니다.
+          </p>
+        </div>
+
         <div className="actions-bar">
           <button
             className="btn-primary"
@@ -411,35 +552,9 @@ export default function PortfolioDetailPage({ user, onLogout }) {
                       검색
                     </button>
                   </div>
-                  {newItem.searchWarning && (
-                    <div className="warning-text">{newItem.searchWarning}</div>
-                  )}
-                  {newItem.searchResults.length > 0 && (
-                    <div className="search-results">
-                      {newItem.searchResults.map((result) => {
-                        const displayName = result.name_ko || result.name || result.symbol;
-                        return (
-                          <button
-                            key={result.symbol}
-                            type="button"
-                            onClick={() => selectAsset(result)}
-                            className="search-result-item"
-                          >
-                            <div className="search-result-main">
-                              <strong>{displayName}</strong>
-                            </div>
-                            <div className="search-result-symbol">{result.symbol}</div>
-                            {result.name_ko && result.name && result.name !== result.name_ko && (
-                              <div className="search-result-name-en">{result.name}</div>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
                 </div>
                 <div className="form-group">
-                  <label>티커</label>
+                  <label>티커(종목코드)</label>
                   <input
                     value={newItem.symbol}
                     onChange={(e) =>
@@ -487,6 +602,60 @@ export default function PortfolioDetailPage({ user, onLogout }) {
                   />
                 </div>
               </div>
+
+              <div className="search-feedback-fullwidth">
+                {lastSearchedQuery && lastSearchedQuery === newItem.searchQuery?.trim() && !hasExactTickerMatch(lastSearchedQuery, newItem.searchResults) && (
+                  <div className="search-no-results">
+                    <p className="search-no-results-title">입력한 티커와 동일한 종목이 없습니다</p>
+                    <p className="search-no-results-text">
+                      야후 파이낸스 정식 티커만 등록할 수 있습니다. 한국 주식은 6자리 종목코드 + <strong>.KS</strong>(코스피) 또는 <strong>.KQ</strong>(코스닥), 미국 주식은 영문 티커(예: AAPL)를 사용하세요.
+                    </p>
+                      <button
+                        type="button"
+                        className="btn-add-ticker-request"
+                        onClick={requestAddTicker}
+                        disabled={addRequesting}
+                      >
+                        {addRequesting ? '요청 중...' : '티커 추가요청하기'}
+                      </button>
+                      <p className="search-no-results-hint">등록 요청은 전체 시스템에서 15초 간격으로 순차 처리됩니다. 처리 후 다시 검색하면 등록 여부를 확인할 수 있습니다.</p>
+                  </div>
+                )}
+                {newItem.searchWarning && (
+                  <div className={`search-warning-box search-warning-below-request ${newItem.searchWarning.includes('큐에 추가') ? 'success' : ''}`}>{newItem.searchWarning}</div>
+                )}
+                {newItem.searchResults.length > 0 && (
+                  <div className="search-results-wrap search-results-fullwidth">
+                    <p className="search-results-label">
+                      {hasExactTickerMatch(newItem.searchQuery?.trim(), newItem.searchResults)
+                        ? '티커 일치 · 검색 결과'
+                        : '이름/티커 포함 검색 결과'}
+                    </p>
+                    <div className="search-results-grid">
+                      {newItem.searchResults.map((result) => {
+                        const displayName = result.name_ko || result.name || result.symbol;
+                        return (
+                          <button
+                            key={result.symbol}
+                            type="button"
+                            onClick={() => selectAsset(result)}
+                            className="search-result-item"
+                          >
+                            <div className="search-result-main">
+                              <strong>{displayName}</strong>
+                            </div>
+                            <div className="search-result-symbol">{result.symbol}</div>
+                            {result.name_ko && result.name && result.name !== result.name_ko && (
+                              <div className="search-result-name-en">{result.name}</div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <button type="submit" className="btn-primary" disabled={loading}>
                 추가
               </button>
@@ -610,18 +779,25 @@ export default function PortfolioDetailPage({ user, onLogout }) {
                   )}
                   <div className="detail-row">
                     <span>현재가</span>
-                    <strong>
-                      {item.currency === 'USD' ? (
-                        <>
-                          {formatCurrency(item.latest_price_krw)}
-                          <span style={{ marginLeft: '8px', fontSize: '0.9em', color: '#64748b', fontWeight: 'normal' }}>
-                            ({formatCurrencyUSD(item.latest_price)})
-                          </span>
-                        </>
-                      ) : (
-                        formatCurrency(item.latest_price)
+                    <div className="current-price-cell">
+                      <strong>
+                        {item.currency === 'USD' ? (
+                          <>
+                            {formatCurrency(item.latest_price_krw)}
+                            <span style={{ marginLeft: '8px', fontSize: '0.9em', color: '#64748b', fontWeight: 'normal' }}>
+                              ({formatCurrencyUSD(item.latest_price)})
+                            </span>
+                          </>
+                        ) : (
+                          formatCurrency(item.latest_price)
+                        )}
+                      </strong>
+                      {item.latest_price_updated_at && (
+                        <span className="price-updated-at">
+                          {formatPriceUpdatedAt(item.latest_price_updated_at)}
+                        </span>
                       )}
-                    </strong>
+                    </div>
                   </div>
                   <div className="detail-row">
                     <span>보유수량</span>

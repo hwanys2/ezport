@@ -1,24 +1,29 @@
 /* eslint-disable no-console */
-const { priceUpdateQueue, seedQueue, exchangeRateQueue } = require('./queue');
+const { priceUpdateQueue, seedQueue, exchangeRateQueue, marketIndexQueue } = require('./queue');
 const { db } = require('./db');
+const { MARKET_INDICES } = require('./market_indices');
 
 // 마지막 Yahoo API 호출 시간 추적 (전역)
 let lastYahooApiCall = 0;
 const MIN_API_INTERVAL = 15000; // 15초
 
+async function ensureYahooRateLimit() {
+  const now = Date.now();
+  const timeSinceLastCall = now - lastYahooApiCall;
+
+  if (timeSinceLastCall < MIN_API_INTERVAL) {
+    const waitTime = MIN_API_INTERVAL - timeSinceLastCall;
+    console.log(`[Yahoo API] Waiting ${waitTime}ms to maintain 15s interval...`);
+    await new Promise((resolve) => setTimeout(resolve, waitTime));
+  }
+
+  lastYahooApiCall = Date.now();
+}
+
 // USD/KRW 환율 조회 함수 (15초 간격 보장)
 async function fetchExchangeRate(yahooFinance) {
   try {
-    const now = Date.now();
-    const timeSinceLastCall = now - lastYahooApiCall;
-    
-    if (timeSinceLastCall < MIN_API_INTERVAL) {
-      const waitTime = MIN_API_INTERVAL - timeSinceLastCall;
-      console.log(`[Yahoo API] Waiting ${waitTime}ms to maintain 15s interval...`);
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
-    }
-    
-    lastYahooApiCall = Date.now();
+    await ensureYahooRateLimit();
     const quote = await yahooFinance.quote('KRW=X'); // USD/KRW 환율
     const rate = quote.regularMarketPrice ?? quote.postMarketPrice ?? quote.preMarketPrice ?? null;
     
@@ -44,16 +49,7 @@ async function fetchExchangeRate(yahooFinance) {
 // Yahoo Finance 가격 조회 함수 (15초 간격 보장)
 async function fetchYahooPrice(yahooFinance, symbol) {
   try {
-    const now = Date.now();
-    const timeSinceLastCall = now - lastYahooApiCall;
-    
-    if (timeSinceLastCall < MIN_API_INTERVAL) {
-      const waitTime = MIN_API_INTERVAL - timeSinceLastCall;
-      console.log(`[Yahoo API] Waiting ${waitTime}ms to maintain 15s interval...`);
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
-    }
-    
-    lastYahooApiCall = Date.now();
+    await ensureYahooRateLimit();
     const quote = await yahooFinance.quote(symbol);
     const price = quote.regularMarketPrice ?? quote.postMarketPrice ?? quote.preMarketPrice ?? null;
     const name = quote.shortName || quote.longName || quote.symbol;
@@ -77,6 +73,26 @@ async function fetchYahooPrice(yahooFinance, symbol) {
     return null;
   } catch (error) {
     console.error(`[Yahoo Price] Failed to fetch ${symbol}:`, error?.message || error);
+    return null;
+  }
+}
+
+async function fetchMarketIndexChart(yahooFinance, symbol) {
+  try {
+    await ensureYahooRateLimit();
+    const period2 = Math.floor(Date.now() / 1000);
+    const threeYearsInSeconds = 3 * 365 * 24 * 60 * 60;
+    const period1 = Math.floor(period2 - threeYearsInSeconds);
+
+    const chart = await yahooFinance.chart(symbol, {
+      period1,
+      period2,
+      interval: '1d',
+    });
+
+    return chart;
+  } catch (error) {
+    console.error(`[Market Index] Failed to fetch ${symbol}:`, error?.message || error);
     return null;
   }
 }
@@ -199,10 +215,123 @@ function setupExchangeRateWorker(yahooFinance) {
   console.log('[Worker] Exchange rate worker started');
 }
 
+function setupMarketIndexWorker(yahooFinance) {
+  const upsertMetric = db.prepare(`
+    INSERT INTO index_metrics (
+      symbol,
+      slug,
+      label,
+      short_label,
+      region,
+      current_price,
+      high_3y,
+      percent_drop,
+      currency,
+      exchange,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(symbol) DO UPDATE SET
+      slug = excluded.slug,
+      label = excluded.label,
+      short_label = excluded.short_label,
+      region = excluded.region,
+      current_price = excluded.current_price,
+      high_3y = excluded.high_3y,
+      percent_drop = excluded.percent_drop,
+      currency = excluded.currency,
+      exchange = excluded.exchange,
+      updated_at = excluded.updated_at
+  `);
+
+  marketIndexQueue.process(async (job) => {
+    const { symbol } = job.data;
+    const indexInfo = MARKET_INDICES.find((entry) => entry.symbol === symbol);
+
+    if (!indexInfo) {
+      console.warn(`[Market Index Worker] Unknown symbol requested: ${symbol}`);
+      return { success: false, symbol, reason: 'unknown-symbol' };
+    }
+
+    console.log(`[Market Index Worker] Updating ${indexInfo.shortLabel} (${symbol})...`);
+
+    const chart = await fetchMarketIndexChart(yahooFinance, symbol);
+
+    if (!chart || !Array.isArray(chart.quotes) || chart.quotes.length === 0) {
+      console.warn(`[Market Index Worker] ✗ ${indexInfo.shortLabel} (${symbol}) - no chart data`);
+      return { success: false, symbol, reason: 'no-data' };
+    }
+
+    const high3y = chart.quotes.reduce((maxHigh, quote) => {
+      if (typeof quote.high === 'number' && !Number.isNaN(quote.high)) {
+        return quote.high > maxHigh ? quote.high : maxHigh;
+      }
+      return maxHigh;
+    }, 0);
+
+    const lastQuote = chart.quotes[chart.quotes.length - 1] || {};
+    const currentPriceCandidate = chart.meta?.regularMarketPrice ?? lastQuote.close ?? null;
+    const currentPrice =
+      typeof currentPriceCandidate === 'number' && !Number.isNaN(currentPriceCandidate)
+        ? currentPriceCandidate
+        : null;
+
+    const percentDrop =
+      currentPrice != null && high3y > 0
+        ? ((currentPrice / high3y) - 1) * 100
+        : null;
+
+    const exchange =
+      chart.meta?.exchangeName ||
+      chart.meta?.fullExchangeName ||
+      chart.meta?.exchange ||
+      null;
+
+    const currency = chart.meta?.currency || null;
+    const updatedAt = new Date().toISOString();
+
+    upsertMetric.run(
+      symbol,
+      indexInfo.slug,
+      indexInfo.label,
+      indexInfo.shortLabel,
+      indexInfo.region,
+      currentPrice,
+      high3y || null,
+      percentDrop,
+      currency,
+      exchange,
+      updatedAt
+    );
+
+    console.log(`[Market Index Worker] ✓ ${indexInfo.shortLabel} updated`);
+    return {
+      success: true,
+      symbol,
+      currentPrice,
+      high3y,
+      percentDrop,
+      updatedAt,
+    };
+  });
+
+  marketIndexQueue.on('completed', (job, result) => {
+    if (result?.success) {
+      console.log(`[Market Index Queue] Completed: ${result.symbol}`);
+    }
+  });
+
+  marketIndexQueue.on('failed', (job, err) => {
+    console.error(`[Market Index Queue] Failed (${job?.data?.symbol || 'unknown'}):`, err?.message || err);
+  });
+
+  console.log('[Worker] Market index worker started');
+}
+
 module.exports = {
   setupPriceUpdateWorker,
   setupSeedWorker,
   setupExchangeRateWorker,
   fetchExchangeRate,
   fetchYahooPrice,
+  setupMarketIndexWorker,
 };

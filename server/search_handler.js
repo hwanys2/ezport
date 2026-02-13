@@ -8,6 +8,28 @@ function uniqBySymbol(items) {
   return [...map.values()];
 }
 
+function ensureExactTickerFirst(db, trimmed, items) {
+  const q = (trimmed || '').trim().toUpperCase();
+  if (!q) return items;
+  const exact = db
+    .prepare(
+      'SELECT symbol, name, name_ko, exchange, currency FROM assets WHERE UPPER(TRIM(symbol)) = ?'
+    )
+    .get(q);
+  if (!exact) return items;
+  const exactItem = {
+    symbol: exact.symbol,
+    name: exact.name || exact.symbol,
+    name_ko: exact.name_ko || null,
+    exchange: exact.exchange || '',
+    currency: exact.currency || '',
+  };
+  const rest = items.filter(
+    (r) => (r.symbol || '').toUpperCase().trim() !== q
+  );
+  return [exactItem, ...rest];
+}
+
 async function searchAssets(db, trimmed) {
   // STEP 1: Check search cache (1 hour)
   const cacheKey = trimmed.toLowerCase();
@@ -18,7 +40,9 @@ async function searchAssets(db, trimmed) {
 
   if (cached) {
     try {
-      return JSON.parse(cached.results);
+      const parsed = JSON.parse(cached.results);
+      const fixed = ensureExactTickerFirst(db, trimmed, parsed.items || []);
+      return { items: fixed.slice(0, 20) };
     } catch {
       // Invalid cache, continue
     }
@@ -120,11 +144,24 @@ async function searchAssets(db, trimmed) {
   // Deduplicate by symbol
   const uniqueResults = uniqBySymbol(results);
 
+  // 티커(심볼) 검색 결과 우선: 정확 일치 → 심볼 접두사 → 심볼 포함 → 이름만
+  const q = trimmed.toUpperCase();
+  uniqueResults.sort((a, b) => {
+    const symA = (a.symbol || '').toUpperCase();
+    const symB = (b.symbol || '').toUpperCase();
+    const priority = (sym) => {
+      if (sym === q) return 0;
+      if (sym.startsWith(q)) return 1;
+      if (sym.includes(q)) return 2;
+      return 3;
+    };
+    return priority(symA) - priority(symB);
+  });
+
+  const withExactFirst = ensureExactTickerFirst(db, trimmed, uniqueResults);
+
   const response = {
-    items: uniqueResults.slice(0, 20),
-    warning: uniqueResults.length === 0 
-      ? 'DB에 종목이 없습니다. 초기화 스크립트(`npm run seed`)를 실행하거나 관리자에게 문의하세요.'
-      : undefined,
+    items: withExactFirst.slice(0, 20),
   };
 
   console.log(`[Search] Found ${uniqueResults.length} results for "${trimmed}"`);

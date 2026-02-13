@@ -80,6 +80,20 @@ function initDb() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS index_metrics (
+      symbol TEXT PRIMARY KEY,
+      slug TEXT,
+      label TEXT,
+      short_label TEXT,
+      region TEXT,
+      current_price REAL,
+      high_3y REAL,
+      percent_drop REAL,
+      currency TEXT,
+      exchange TEXT,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS us_stock_listings (
       symbol TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -102,6 +116,20 @@ function initDb() {
     }
   } catch (error) {
     console.warn('[DB Migration] Error checking/adding is_public column:', error?.message);
+  }
+
+  // 마이그레이션: memo 컬럼 추가 (기존 테이블에 없으면 추가)
+  try {
+    const tableInfo = db.prepare("PRAGMA table_info(portfolios)").all();
+    const hasMemo = tableInfo.some(col => col.name === 'memo');
+    
+    if (!hasMemo) {
+      console.log('[DB Migration] Adding memo column to portfolios table...');
+      db.exec('ALTER TABLE portfolios ADD COLUMN memo TEXT');
+      console.log('[DB Migration] memo column added successfully');
+    }
+  } catch (error) {
+    console.warn('[DB Migration] Error checking/adding memo column:', error?.message);
   }
 
   // 마이그레이션: hwanys2@naver.com을 hwanys2로 변경

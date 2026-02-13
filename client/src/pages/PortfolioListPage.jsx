@@ -7,6 +7,10 @@ export default function PortfolioListPage({ user, onLogout }) {
   const [items, setItems] = useState([])
   const [publicPortfolios, setPublicPortfolios] = useState([])
   const [error, setError] = useState('')
+  const [marketIndices, setMarketIndices] = useState([])
+  const [indicesError, setIndicesError] = useState('')
+  const [indicesLoading, setIndicesLoading] = useState(true)
+  const [indicesRequestedAt, setIndicesRequestedAt] = useState(null)
 
   useEffect(() => {
     const token = getToken()
@@ -22,6 +26,48 @@ export default function PortfolioListPage({ user, onLogout }) {
       .catch(() => {
         setPublicPortfolios([]);
       })
+
+    let cancelled = false
+
+    const fetchIndices = async ({ silent = false } = {}) => {
+      if (cancelled) return
+      const activeToken = getToken()
+
+      if (!silent) {
+        setIndicesLoading(true)
+        setIndicesError('')
+      }
+
+      try {
+        const data = await apiFetch('/api/market-indices', { token: activeToken })
+        if (cancelled) return
+        setMarketIndices(data.items || [])
+        setIndicesRequestedAt(data.requestedAt || null)
+        if (!silent) {
+          setIndicesError('')
+        }
+      } catch (err) {
+        if (cancelled) return
+        if (!silent) {
+          setIndicesError(err.message || '시장 지수 정보를 불러오지 못했습니다.')
+        }
+      } finally {
+        if (cancelled) return
+        if (!silent) {
+          setIndicesLoading(false)
+        }
+      }
+    }
+
+    fetchIndices()
+    const intervalId = setInterval(() => {
+      fetchIndices({ silent: true })
+    }, 60000)
+
+    return () => {
+      cancelled = true
+      clearInterval(intervalId)
+    }
   }, [])
 
   const formatCurrency = (num) => {
@@ -31,6 +77,38 @@ export default function PortfolioListPage({ user, onLogout }) {
       currency: 'KRW',
       maximumFractionDigits: 0,
     }).format(num)
+  }
+
+  const formatIndexValue = (num, currency) => {
+    if (num == null) return '-'
+    const effectiveCurrency = currency || 'USD'
+    const locale = effectiveCurrency === 'USD' ? 'en-US' : 'ko-KR'
+    const maximumFractionDigits = effectiveCurrency === 'KRW' ? 0 : 2
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: effectiveCurrency,
+      maximumFractionDigits,
+    }).format(num)
+  }
+
+  const formatPercent = (value) => {
+    if (value == null || Number.isNaN(value)) return '-'
+    const rounded = value.toFixed(2)
+    return `${value > 0 ? '+' : ''}${rounded}%`
+  }
+
+  const formatRelativeTime = (isoString) => {
+    if (!isoString) return '업데이트 대기 중'
+    const updated = new Date(isoString)
+    if (Number.isNaN(updated.getTime())) return '업데이트 대기 중'
+    const diffMs = Date.now() - updated.getTime()
+    const minutes = Math.floor(diffMs / (60 * 1000))
+    if (minutes < 1) return '방금 업데이트'
+    if (minutes < 60) return `${minutes}분 전 업데이트`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}시간 전 업데이트`
+    const days = Math.floor(hours / 24)
+    return `${days}일 전 업데이트`
   }
 
   return (
@@ -85,6 +163,107 @@ export default function PortfolioListPage({ user, onLogout }) {
               </div>
             </Link>
           ))}
+        </div>
+
+        <div className="market-overview-section">
+          <div className="list-header market-overview-header">
+            <div>
+              <h2>주요 지수 현재 위치</h2>
+              <p className="subtitle">3년 고가 대비 하락률을 확인하세요</p>
+            </div>
+            {indicesRequestedAt && (
+              <div className="market-overview-actions">
+                <span className="market-overview-timestamp">
+                  {`확인: ${formatRelativeTime(indicesRequestedAt)}`}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {indicesError && (
+            <div className="inline-error">
+              {indicesError}
+            </div>
+          )}
+
+          <div className="market-indices-grid">
+            {indicesLoading && marketIndices.length === 0 &&
+              Array.from({ length: 4 }).map((_, idx) => (
+                <div key={`skeleton-${idx}`} className="market-index-card skeleton">
+                  <div className="skeleton-line wide" />
+                  <div className="skeleton-line medium" />
+                  <div className="skeleton-line short" />
+                </div>
+              ))
+            }
+
+            {!indicesLoading && marketIndices.length === 0 && (
+              <div className="market-index-empty">
+                <p>시장 지수 데이터를 불러오는 중입니다. 잠시 후 다시 시도해 주세요.</p>
+              </div>
+            )}
+
+            {marketIndices.map((indexInfo) => {
+              const dropClass =
+                indexInfo.percentDrop == null
+                  ? ''
+                  : indexInfo.percentDrop <= 0
+                    ? 'negative'
+                    : 'positive'
+
+              const progressPercent =
+                indexInfo.currentPrice != null && indexInfo.high3y
+                  ? Math.min(Math.max((indexInfo.currentPrice / indexInfo.high3y) * 100, 0), 120)
+                  : 0
+
+              return (
+                <div
+                  key={indexInfo.symbol}
+                  className="market-index-card"
+                >
+                  <div className="market-index-header">
+                    <div>
+                      <span className="market-index-label">{indexInfo.label}</span>
+                      <span className="market-index-symbol">{indexInfo.symbol}</span>
+                    </div>
+                    <span className="market-index-region">{indexInfo.region}</span>
+                  </div>
+
+                  <div className={`market-index-drop ${dropClass}`}>
+                    {formatPercent(indexInfo.percentDrop)}
+                  </div>
+
+                  <div className="market-index-progress">
+                    <div
+                      className="market-index-progress-fill"
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+
+                  <div className="market-index-values">
+                    <div>
+                      <span className="market-index-value-label">현재</span>
+                      <span className="market-index-value">
+                        {formatIndexValue(indexInfo.currentPrice, indexInfo.currency)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="market-index-value-label">3년 고가</span>
+                      <span className="market-index-value">
+                        {formatIndexValue(indexInfo.high3y, indexInfo.currency)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="market-index-footer">
+                    <span className="market-index-updated">
+                      {formatRelativeTime(indexInfo.updatedAt)}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </div>
 
         <div style={{ marginTop: '64px' }}>
