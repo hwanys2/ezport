@@ -147,14 +147,14 @@ function setupSeedWorker(yahooFinance) {
             WHERE symbol = $5
           `, result.name, name_ko || null, result.exchange, result.currency, symbol);
         } else {
-          // 새 레코드 삽입 (id는 SERIAL로 자동 생성)
+          // 새 레코드 삽입 시도 (duplicate key 오류는 조용히 처리)
           try {
-            await db.run(`
+            await db.query(`
               INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
               VALUES ($1, $2, $3, $4, $5, $6)
-            `, symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
+            `, [symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString()], { silentDuplicateKey: true });
           } catch (insertError) {
-            // 동시성 문제로 인해 INSERT 실패 시 다시 UPDATE 시도
+            // 동시성 문제로 인해 INSERT 실패 시 UPDATE로 전환 (오류 로그 없음)
             if (insertError.message && insertError.message.includes('duplicate key')) {
               await db.run(`
                 UPDATE assets 
@@ -162,6 +162,7 @@ function setupSeedWorker(yahooFinance) {
                 WHERE symbol = $5
               `, result.name, name_ko || null, result.exchange, result.currency, symbol);
             } else {
+              // 다른 오류는 그대로 throw (로그 출력됨)
               throw insertError;
             }
           }

@@ -69,7 +69,7 @@ pool.on('connect', (client) => {
 // SQLite와 호환되는 API 래퍼
 const db = {
   // prepare().get() 대체
-  async query(text, params) {
+  async query(text, params, options = {}) {
     const start = Date.now();
     try {
       const res = await pool.query(text, params);
@@ -79,7 +79,15 @@ const db = {
       }
       return res;
     } catch (error) {
-      console.error('[DB Query Error]', { text, error: error.message });
+      // duplicate key 오류는 예상된 오류이므로 조용히 처리 (ON CONFLICT 대체용)
+      const isDuplicateKey = error.message && (
+        error.message.includes('duplicate key') ||
+        error.message.includes('unique constraint')
+      );
+      
+      if (!isDuplicateKey || !options.silentDuplicateKey) {
+        console.error('[DB Query Error]', { text, error: error.message });
+      }
       throw error;
     }
   },
