@@ -235,7 +235,8 @@ export default function PortfolioDetailPage({ user, onLogout }) {
     console.log('[Add Item] Sending payload:', payload)
     
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/portfolios/${id}/items`, {
+      const apiUrl = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '' : 'http://localhost:4000');
+      const response = await fetch(`${apiUrl}/api/portfolios/${id}/items`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

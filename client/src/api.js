@@ -1,7 +1,20 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000'
+// 프로덕션에서는 같은 도메인 사용 (상대 경로), 개발 환경에서만 환경 변수 사용
+const getApiUrlFromEnv = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  // 프로덕션 환경에서는 상대 경로 사용 (같은 도메인에서 서빙됨)
+  if (import.meta.env.PROD) {
+    return '';
+  }
+  // 개발 환경 기본값
+  return 'http://localhost:4000';
+};
+
+const API_URL = getApiUrlFromEnv();
 
 export function getApiUrl() {
-  return API_URL
+  return API_URL;
 }
 
 export function getToken() {
