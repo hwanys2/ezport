@@ -98,61 +98,64 @@ async function searchAssets(db, trimmed) {
   
   console.log(`[Search] Searching assets table for: "${trimmed}" (upper: "${upperTrimmed}")`);
   
-  // assets 테이블에서 검색 (정확한 매칭 우선, 그 다음 부분 매칭)
+  // 먼저 정확한 심볼 매칭 확인
+  const exactSymbol = await db.get(
+    'SELECT symbol, name, name_ko, exchange, currency FROM assets WHERE symbol = $1',
+    upperTrimmed
+  );
+  
+  if (exactSymbol) {
+    console.log(`[Search] ✓ Found exact symbol match: ${exactSymbol.symbol} (${exactSymbol.name || 'N/A'})`);
+    results.push({
+      symbol: exactSymbol.symbol,
+      name: exactSymbol.name || exactSymbol.symbol,
+      name_ko: exactSymbol.name_ko || null,
+      exchange: exactSymbol.exchange || '',
+      currency: exactSymbol.currency || '',
+    });
+  }
+  
+  // 부분 매칭 검색 (정확한 매칭이 없거나 추가 결과가 필요한 경우)
   const assetsResults = await db.all(
     `
       SELECT symbol, name, name_ko, exchange, currency
       FROM assets
-      WHERE UPPER(TRIM(symbol)) = $1
-         OR UPPER(TRIM(symbol)) LIKE $2
-         OR (name IS NOT NULL AND UPPER(name) LIKE $3) 
-         OR (name_ko IS NOT NULL AND name_ko LIKE $4)
+      WHERE symbol != $1
+        AND (
+          UPPER(symbol) LIKE $2
+          OR (name IS NOT NULL AND UPPER(name) LIKE $3)
+          OR (name_ko IS NOT NULL AND name_ko LIKE $4)
+        )
       ORDER BY 
         CASE
-          WHEN UPPER(TRIM(symbol)) = $5 THEN 0
-          WHEN UPPER(TRIM(symbol)) LIKE $6 THEN 1
-          WHEN name IS NOT NULL AND UPPER(name) = $7 THEN 2
-          WHEN name_ko IS NOT NULL AND name_ko = $8 THEN 3
-          WHEN UPPER(TRIM(symbol)) LIKE $9 THEN 4
-          WHEN name IS NOT NULL AND UPPER(name) LIKE $10 THEN 5
-          WHEN name_ko IS NOT NULL AND name_ko LIKE $11 THEN 6
-          ELSE 7
+          WHEN UPPER(symbol) LIKE $5 THEN 0
+          WHEN name IS NOT NULL AND UPPER(name) LIKE $6 THEN 1
+          WHEN name_ko IS NOT NULL AND name_ko LIKE $7 THEN 2
+          ELSE 3
         END,
         LENGTH(symbol) ASC
-      LIMIT 20
+      LIMIT 19
     `,
     upperTrimmed, upperLike, upperLike, like,
-    upperTrimmed, `${upperTrimmed}%`, upperTrimmed, trimmed,
     `${upperTrimmed}%`, `${upperTrimmed}%`, `${trimmed}%`
   );
   
-  console.log(`[Search] assets table search for "${trimmed}": found ${assetsResults.length} results`);
+  console.log(`[Search] assets table partial search for "${trimmed}": found ${assetsResults.length} results`);
   if (assetsResults.length > 0) {
-    const exactMatches = assetsResults.filter(r => r.symbol.toUpperCase().trim() === upperTrimmed);
-    if (exactMatches.length > 0) {
-      console.log(`[Search] ✓ Found ${exactMatches.length} exact match(es): ${exactMatches.map(r => r.symbol).join(', ')}`);
-    }
     console.log(`[Search] Sample results:`, assetsResults.slice(0, 5).map(r => `${r.symbol} (${r.name || 'N/A'})`));
-  } else {
-    // 디버깅: assets 테이블에 어떤 데이터가 있는지 확인
-    const allAssets = await db.all('SELECT symbol FROM assets ORDER BY symbol LIMIT 10');
-    console.log(`[Search] DEBUG: Sample assets in table:`, allAssets.map(a => a.symbol));
-    
-    // DIA와 유사한 심볼이 있는지 확인
-    const diaLike = await db.all('SELECT symbol FROM assets WHERE UPPER(symbol) LIKE $1 LIMIT 5', '%DIA%');
-    if (diaLike.length > 0) {
-      console.log(`[Search] DEBUG: Found DIA-like symbols:`, diaLike.map(a => a.symbol));
-    }
   }
   
   assetsResults.forEach((asset) => {
-    results.push({
-      symbol: asset.symbol,
-      name: asset.name || asset.symbol,
-      name_ko: asset.name_ko || null,
-      exchange: asset.exchange || '',
-      currency: asset.currency || '',
-    });
+    // 중복 제거 (정확한 매칭과 겹치지 않도록)
+    if (!results.some(r => r.symbol === asset.symbol)) {
+      results.push({
+        symbol: asset.symbol,
+        name: asset.name || asset.symbol,
+        name_ko: asset.name_ko || null,
+        exchange: asset.exchange || '',
+        currency: asset.currency || '',
+      });
+    }
   });
 
 
