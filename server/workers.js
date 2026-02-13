@@ -137,53 +137,46 @@ function setupSeedWorker(yahooFinance) {
     const result = await fetchYahooPrice(yahooFinance, symbol);
     if (result) {
       try {
-        // UPSERT: 먼저 존재 여부 확인 후 처리 (동시성 문제 방지)
-        const existing = await db.get('SELECT id FROM assets WHERE symbol = $1', symbol);
-        if (existing) {
-          // 기존 레코드 업데이트
-          await db.run(`
-            UPDATE assets 
-            SET name = $1, name_ko = $2, exchange = $3, currency = $4
-            WHERE symbol = $5
-          `, result.name, name_ko || null, result.exchange, result.currency, symbol);
-          console.log(`[Seed Worker] Updated assets table: ${symbol} (${result.name})`);
+        // UPSERT: ON CONFLICT를 사용하여 한 번에 처리 (가장 안전하고 효율적)
+        const upsertResult = await db.run(`
+          INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (symbol) DO UPDATE SET
+            name = excluded.name,
+            name_ko = excluded.name_ko,
+            exchange = excluded.exchange,
+            currency = excluded.currency
+        `, symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
+        
+        if (upsertResult.changes > 0) {
+          console.log(`[Seed Worker] ✓ Upserted into assets table: ${symbol} (${result.name}), rows affected: ${upsertResult.changes}`);
         } else {
-          // 새 레코드 삽입 시도 (duplicate key 오류는 조용히 처리)
-          try {
-            await db.query(`
-              INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6)
-            `, [symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString()], { silentDuplicateKey: true });
-            console.log(`[Seed Worker] Inserted into assets table: ${symbol} (${result.name})`);
-          } catch (insertError) {
-            // 동시성 문제로 인해 INSERT 실패 시 UPDATE로 전환 (오류 로그 없음)
-            if (insertError.message && insertError.message.includes('duplicate key')) {
-              await db.run(`
-                UPDATE assets 
-                SET name = $1, name_ko = $2, exchange = $3, currency = $4
-                WHERE symbol = $5
-              `, result.name, name_ko || null, result.exchange, result.currency, symbol);
-              console.log(`[Seed Worker] Updated assets table (after conflict): ${symbol} (${result.name})`);
-            } else {
-              // 다른 오류는 그대로 throw (로그 출력됨)
-              throw insertError;
-            }
-          }
+          console.log(`[Seed Worker] ✓ Upserted into assets table: ${symbol} (${result.name}) - no changes (already exists)`);
         }
         
         // 저장 확인: assets 테이블에서 실제로 저장되었는지 확인 (여러 방법으로 검증)
+        // 약간의 지연을 두어 커밋이 완료되도록 함
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
         const verifyBySymbol = await db.get('SELECT symbol, name, exchange, currency FROM assets WHERE symbol = $1', symbol);
         const verifyByUpper = await db.get('SELECT symbol, name, exchange, currency FROM assets WHERE UPPER(TRIM(symbol)) = $1', symbol.toUpperCase());
+        const verifyByLike = await db.get('SELECT symbol, name, exchange, currency FROM assets WHERE symbol LIKE $1', `%${symbol}%`);
         
         if (verifyBySymbol) {
           console.log(`[Seed Worker] ✓ Verified in assets (by symbol): ${JSON.stringify(verifyBySymbol)}`);
         } else if (verifyByUpper) {
           console.log(`[Seed Worker] ✓ Verified in assets (by UPPER): ${JSON.stringify(verifyByUpper)}`);
+        } else if (verifyByLike) {
+          console.log(`[Seed Worker] ⚠ Verified in assets (by LIKE): ${JSON.stringify(verifyByLike)} - symbol may have extra characters`);
         } else {
           console.error(`[Seed Worker] ✗ WARNING: ${symbol} not found in assets table after insert/update!`);
-          // 추가 디버깅: assets 테이블의 모든 심볼 확인
-          const allSymbols = await db.all('SELECT symbol FROM assets ORDER BY symbol LIMIT 10');
-          console.error(`[Seed Worker] DEBUG: Sample symbols in assets table:`, allSymbols.map(a => a.symbol));
+          // 추가 디버깅: assets 테이블의 모든 심볼 확인 (DIA와 유사한 것들)
+          const allSymbols = await db.all('SELECT symbol FROM assets WHERE symbol LIKE $1 OR UPPER(symbol) LIKE $2 ORDER BY symbol LIMIT 20', `%${symbol}%`, `%${symbol.toUpperCase()}%`);
+          console.error(`[Seed Worker] DEBUG: Symbols matching "${symbol}":`, allSymbols.map(a => a.symbol));
+          if (allSymbols.length === 0) {
+            const sampleSymbols = await db.all('SELECT symbol FROM assets ORDER BY symbol LIMIT 10');
+            console.error(`[Seed Worker] DEBUG: Sample symbols in assets table:`, sampleSymbols.map(a => a.symbol));
+          }
         }
         
         await db.run(`
