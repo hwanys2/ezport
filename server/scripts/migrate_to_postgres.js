@@ -20,9 +20,27 @@ if (!fs.existsSync(sqlitePath)) {
 }
 
 // PostgreSQL 연결 설정
+// Railway의 공개 연결 문자열 사용 (내부 호스트명은 로컬에서 접근 불가)
+let connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+
+if (!connectionString) {
+  console.error('[Migration] DATABASE_URL 또는 POSTGRES_URL 환경 변수가 필요합니다.');
+  console.error('[Migration] Railway 대시보드 → PostgreSQL 서비스 → Connect → Public Network에서 연결 문자열을 복사하세요.');
+  process.exit(1);
+}
+
+// Railway 내부 호스트명을 공개 호스트명으로 변경
+if (connectionString.includes('postgres.railway.internal')) {
+  console.warn('[Migration] 내부 호스트명 감지. Railway의 공개 연결 문자열을 사용하세요.');
+  console.warn('[Migration] Railway 대시보드 → PostgreSQL → Connect → Public Network');
+  process.exit(1);
+}
+
 const pgPool = new Pool({
-  connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+  connectionString: connectionString,
+  ssl: connectionString.includes('railway.app') || connectionString.includes('railway.internal') 
+    ? { rejectUnauthorized: false } 
+    : false,
 });
 
 // SQLite 연결
