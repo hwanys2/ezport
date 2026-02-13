@@ -95,45 +95,67 @@ async function searchAssets(db, trimmed) {
   // 대소문자 구분 없이 검색
   const upperTrimmed = trimmed.toUpperCase();
   const upperLike = `%${upperTrimmed}%`;
-  const assetsResults = await db.all(
-    `
-      SELECT symbol, name, name_ko, exchange, currency
-      FROM assets
-      WHERE UPPER(symbol) LIKE $1 
-         OR (name IS NOT NULL AND UPPER(name) LIKE $2) 
-         OR (name_ko IS NOT NULL AND name_ko LIKE $3)
-      ORDER BY 
-        CASE
-          WHEN UPPER(symbol) = $4 THEN 0
-          WHEN name IS NOT NULL AND UPPER(name) = $5 THEN 1
-          WHEN name_ko IS NOT NULL AND name_ko = $6 THEN 2
-          WHEN UPPER(symbol) LIKE $7 THEN 3
-          WHEN name IS NOT NULL AND UPPER(name) LIKE $8 THEN 4
-          WHEN name_ko IS NOT NULL AND name_ko LIKE $9 THEN 5
-          ELSE 6
-        END,
-        LENGTH(symbol) ASC
-      LIMIT 15
-    `,
-    upperLike, upperLike, like,
-    upperTrimmed, upperTrimmed, trimmed,
-    `${upperTrimmed}%`, `${upperTrimmed}%`, `${trimmed}%`
+  
+  // 먼저 정확한 매칭 확인 (가장 빠름)
+  const exactMatch = await db.get(
+    'SELECT symbol, name, name_ko, exchange, currency FROM assets WHERE UPPER(symbol) = $1',
+    upperTrimmed
   );
   
-  console.log(`[Search] assets table query for "${trimmed}": found ${assetsResults.length} results`);
-  if (assetsResults.length > 0) {
-    console.log(`[Search] Sample results:`, assetsResults.slice(0, 3).map(r => r.symbol));
+  if (exactMatch) {
+    console.log(`[Search] Exact match found in assets: ${exactMatch.symbol}`);
+    results.push({
+      symbol: exactMatch.symbol,
+      name: exactMatch.name || exactMatch.symbol,
+      name_ko: exactMatch.name_ko || null,
+      exchange: exactMatch.exchange || '',
+      currency: exactMatch.currency || '',
+    });
+  }
+  
+  // 부분 매칭 검색 (정확한 매칭이 없을 때만)
+  if (!exactMatch) {
+    const assetsResults = await db.all(
+      `
+        SELECT symbol, name, name_ko, exchange, currency
+        FROM assets
+        WHERE UPPER(symbol) LIKE $1 
+           OR (name IS NOT NULL AND UPPER(name) LIKE $2) 
+           OR (name_ko IS NOT NULL AND name_ko LIKE $3)
+        ORDER BY 
+          CASE
+            WHEN UPPER(symbol) = $4 THEN 0
+            WHEN name IS NOT NULL AND UPPER(name) = $5 THEN 1
+            WHEN name_ko IS NOT NULL AND name_ko = $6 THEN 2
+            WHEN UPPER(symbol) LIKE $7 THEN 3
+            WHEN name IS NOT NULL AND UPPER(name) LIKE $8 THEN 4
+            WHEN name_ko IS NOT NULL AND name_ko LIKE $9 THEN 5
+            ELSE 6
+          END,
+          LENGTH(symbol) ASC
+        LIMIT 15
+      `,
+      upperLike, upperLike, like,
+      upperTrimmed, upperTrimmed, trimmed,
+      `${upperTrimmed}%`, `${upperTrimmed}%`, `${trimmed}%`
+    );
+    
+    console.log(`[Search] assets table partial search for "${trimmed}": found ${assetsResults.length} results`);
+    if (assetsResults.length > 0) {
+      console.log(`[Search] Sample results:`, assetsResults.slice(0, 3).map(r => r.symbol));
+    }
+    
+    assetsResults.forEach((asset) => {
+      results.push({
+        symbol: asset.symbol,
+        name: asset.name || asset.symbol,
+        name_ko: asset.name_ko || null,
+        exchange: asset.exchange || '',
+        currency: asset.currency || '',
+      });
+    });
   }
 
-  assetsResults.forEach((asset) => {
-    results.push({
-      symbol: asset.symbol,
-      name: asset.name || asset.symbol,
-      name_ko: asset.name_ko || null,
-      exchange: asset.exchange || '',
-      currency: asset.currency || '',
-    });
-  });
 
   // Deduplicate by symbol
   const uniqueResults = uniqBySymbol(results);
