@@ -96,14 +96,16 @@ async function searchAssets(db, trimmed) {
   const upperTrimmed = trimmed.toUpperCase();
   const upperLike = `%${upperTrimmed}%`;
   
-  // 먼저 정확한 매칭 확인 (가장 빠름)
+  console.log(`[Search] Searching assets table for: "${trimmed}" (upper: "${upperTrimmed}")`);
+  
+  // 먼저 정확한 매칭 확인 (TRIM 사용하여 공백 제거)
   const exactMatch = await db.get(
-    'SELECT symbol, name, name_ko, exchange, currency FROM assets WHERE UPPER(symbol) = $1',
+    'SELECT symbol, name, name_ko, exchange, currency FROM assets WHERE UPPER(TRIM(symbol)) = $1',
     upperTrimmed
   );
   
   if (exactMatch) {
-    console.log(`[Search] Exact match found in assets: ${exactMatch.symbol}`);
+    console.log(`[Search] ✓ Exact match found in assets: ${exactMatch.symbol} (name: ${exactMatch.name || 'N/A'})`);
     results.push({
       symbol: exactMatch.symbol,
       name: exactMatch.name || exactMatch.symbol,
@@ -111,23 +113,23 @@ async function searchAssets(db, trimmed) {
       exchange: exactMatch.exchange || '',
       currency: exactMatch.currency || '',
     });
-  }
-  
-  // 부분 매칭 검색 (정확한 매칭이 없을 때만)
-  if (!exactMatch) {
+  } else {
+    console.log(`[Search] ✗ No exact match found for "${upperTrimmed}" in assets table`);
+    
+    // 부분 매칭 검색
     const assetsResults = await db.all(
       `
         SELECT symbol, name, name_ko, exchange, currency
         FROM assets
-        WHERE UPPER(symbol) LIKE $1 
+        WHERE UPPER(TRIM(symbol)) LIKE $1 
            OR (name IS NOT NULL AND UPPER(name) LIKE $2) 
            OR (name_ko IS NOT NULL AND name_ko LIKE $3)
         ORDER BY 
           CASE
-            WHEN UPPER(symbol) = $4 THEN 0
+            WHEN UPPER(TRIM(symbol)) = $4 THEN 0
             WHEN name IS NOT NULL AND UPPER(name) = $5 THEN 1
             WHEN name_ko IS NOT NULL AND name_ko = $6 THEN 2
-            WHEN UPPER(symbol) LIKE $7 THEN 3
+            WHEN UPPER(TRIM(symbol)) LIKE $7 THEN 3
             WHEN name IS NOT NULL AND UPPER(name) LIKE $8 THEN 4
             WHEN name_ko IS NOT NULL AND name_ko LIKE $9 THEN 5
             ELSE 6
@@ -142,7 +144,11 @@ async function searchAssets(db, trimmed) {
     
     console.log(`[Search] assets table partial search for "${trimmed}": found ${assetsResults.length} results`);
     if (assetsResults.length > 0) {
-      console.log(`[Search] Sample results:`, assetsResults.slice(0, 3).map(r => r.symbol));
+      console.log(`[Search] Sample results:`, assetsResults.slice(0, 3).map(r => `${r.symbol} (${r.name || 'N/A'})`));
+    } else {
+      // 디버깅: assets 테이블에 어떤 데이터가 있는지 확인
+      const allAssets = await db.all('SELECT symbol FROM assets LIMIT 5');
+      console.log(`[Search] DEBUG: Sample assets in table:`, allAssets.map(a => a.symbol));
     }
     
     assetsResults.forEach((asset) => {

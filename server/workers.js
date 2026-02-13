@@ -171,12 +171,19 @@ function setupSeedWorker(yahooFinance) {
           }
         }
         
-        // 저장 확인: assets 테이블에서 실제로 저장되었는지 확인
-        const verify = await db.get('SELECT symbol, name, exchange, currency FROM assets WHERE symbol = $1', symbol);
-        if (verify) {
-          console.log(`[Seed Worker] Verified in assets: ${JSON.stringify(verify)}`);
+        // 저장 확인: assets 테이블에서 실제로 저장되었는지 확인 (여러 방법으로 검증)
+        const verifyBySymbol = await db.get('SELECT symbol, name, exchange, currency FROM assets WHERE symbol = $1', symbol);
+        const verifyByUpper = await db.get('SELECT symbol, name, exchange, currency FROM assets WHERE UPPER(TRIM(symbol)) = $1', symbol.toUpperCase());
+        
+        if (verifyBySymbol) {
+          console.log(`[Seed Worker] ✓ Verified in assets (by symbol): ${JSON.stringify(verifyBySymbol)}`);
+        } else if (verifyByUpper) {
+          console.log(`[Seed Worker] ✓ Verified in assets (by UPPER): ${JSON.stringify(verifyByUpper)}`);
         } else {
-          console.error(`[Seed Worker] WARNING: ${symbol} not found in assets table after insert/update!`);
+          console.error(`[Seed Worker] ✗ WARNING: ${symbol} not found in assets table after insert/update!`);
+          // 추가 디버깅: assets 테이블의 모든 심볼 확인
+          const allSymbols = await db.all('SELECT symbol FROM assets ORDER BY symbol LIMIT 10');
+          console.error(`[Seed Worker] DEBUG: Sample symbols in assets table:`, allSymbols.map(a => a.symbol));
         }
         
         await db.run(`
