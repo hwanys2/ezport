@@ -21,8 +21,6 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
 
-initDb();
-
 const YahooFinanceCtor = yahooFinanceModule?.default || yahooFinanceModule;
 const yahooFinance = new YahooFinanceCtor({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
 
@@ -30,9 +28,27 @@ const MARKET_INDEX_CACHE_MINUTES = 60;
 
 // 서버 시작 시 큐 상태 확인 및 워커 시작 (큐 작업은 이어서 실행)
 (async () => {
+  // 데이터베이스 초기화 (재시도 로직 포함)
+  let dbInitialized = false;
+  let retries = 5;
+  while (!dbInitialized && retries > 0) {
+    try {
+      await initDb();
+      dbInitialized = true;
+      console.log('[Init] Database initialized successfully');
+    } catch (error) {
+      retries--;
+      if (retries > 0) {
+        console.warn(`[Init] Database initialization failed, retrying in 3 seconds... (${retries} retries left)`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      } else {
+        console.error('[Init] Database initialization failed after all retries:', error.message);
+        console.error('[Init] Please check PostgreSQL service connection in Railway');
+      }
+    }
+  }
+
   try {
-    // 데이터베이스 초기화
-    await initDb();
     
     const seedCounts = await seedQueue.getJobCounts();
     const priceCounts = await priceUpdateQueue.getJobCounts();
@@ -1309,7 +1325,13 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(clientDistPath));
   
   // API가 아닌 모든 요청은 클라이언트로 라우팅 (SPA 라우팅 지원)
-  app.get('*', (req, res) => {
+  // Express 5 호환: use()를 사용하여 모든 GET 요청 처리
+  app.use((req, res, next) => {
+    // API 경로는 제외
+    if (req.path.startsWith('/api/')) {
+      return next();
+    }
+    // 정적 파일 요청도 제외 (이미 express.static이 처리)
     res.sendFile(path.join(clientDistPath, 'index.html'));
   });
 }

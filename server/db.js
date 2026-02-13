@@ -1,20 +1,70 @@
 const { Pool } = require('pg');
 
 // PostgreSQL 연결 설정
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+// Railway는 여러 환경 변수를 제공할 수 있음
+let connectionConfig;
+
+if (process.env.DATABASE_URL) {
+  // DATABASE_URL이 있으면 사용
+  connectionConfig = {
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+  };
+} else if (process.env.POSTGRES_URL) {
+  // POSTGRES_URL이 있으면 사용
+  connectionConfig = {
+    connectionString: process.env.POSTGRES_URL,
+    ssl: { rejectUnauthorized: false },
+  };
+} else if (process.env.PGHOST) {
+  // Railway의 개별 환경 변수 사용
+  connectionConfig = {
+    host: process.env.PGHOST,
+    port: process.env.PGPORT || 5432,
+    user: process.env.PGUSER,
+    password: process.env.PGPASSWORD,
+    database: process.env.PGDATABASE,
+    ssl: { rejectUnauthorized: false },
+  };
+} else {
+  // 로컬 개발 환경 (기본값)
+  connectionConfig = {
+    host: 'localhost',
+    port: 5432,
+    user: 'postgres',
+    password: 'postgres',
+    database: 'postgres',
+    ssl: false,
+  };
+  console.warn('[DB] Using default local PostgreSQL config. Set DATABASE_URL or POSTGRES_URL for production.');
+}
+
+console.log('[DB] Connecting to PostgreSQL...', {
+  hasDatabaseUrl: !!process.env.DATABASE_URL,
+  hasPostgresUrl: !!process.env.POSTGRES_URL,
+  hasPghost: !!process.env.PGHOST,
+  host: connectionConfig.host || connectionConfig.connectionString?.split('@')[1]?.split('/')[0] || 'from connection string',
+});
+
+const pool = new Pool(connectionConfig);
+
+// 연결 풀 설정
+pool.on('error', (err) => {
+  console.error('[DB] Unexpected error on idle client', err);
+  // 프로덕션에서는 프로세스를 종료하지 않고 재연결 시도
+  if (process.env.NODE_ENV === 'production') {
+    console.log('[DB] Will retry connection...');
+  } else {
+    process.exit(-1);
+  }
 });
 
 // 연결 테스트
-pool.on('connect', () => {
+pool.on('connect', (client) => {
   console.log('[DB] PostgreSQL connected');
 });
 
-pool.on('error', (err) => {
-  console.error('[DB] Unexpected error on idle client', err);
-  process.exit(-1);
-});
+// 연결 풀 에러 핸들링은 아래로 이동
 
 // SQLite와 호환되는 API 래퍼
 const db = {
@@ -124,6 +174,22 @@ const db = {
 };
 
 async function initDb() {
+  // 연결 테스트
+  try {
+    await pool.query('SELECT NOW()');
+    console.log('[DB] PostgreSQL connection test successful');
+  } catch (error) {
+    console.error('[DB] PostgreSQL connection failed:', error.message);
+    console.error('[DB] Connection config:', {
+      hasDatabaseUrl: !!process.env.DATABASE_URL,
+      hasPostgresUrl: !!process.env.POSTGRES_URL,
+      hasPghost: !!process.env.PGHOST,
+    });
+    // Railway에서는 PostgreSQL 서비스가 아직 준비되지 않았을 수 있음
+    // 재시도 로직은 상위에서 처리
+    throw error;
+  }
+
   // PostgreSQL 스키마 생성
   await db.exec(`
     CREATE TABLE IF NOT EXISTS users (
