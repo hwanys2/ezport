@@ -97,7 +97,7 @@ function parseCSV(csvText) {
 }
 
 async function main() {
-  initDb();
+  await initDb();
 
   // CSV 파일 경로 (명령줄 인자 또는 기본값)
   const csvPath = process.argv[2] || path.join(__dirname, '../../Downloads/data_2404_20260123.csv');
@@ -156,22 +156,24 @@ async function main() {
   console.log(`[ETF Update] ETN: ${listings.filter(l => l.market === 'ETN').length}`);
 
   // 기존 krx_listings에 있는 모든 코드 확인 (중복 방지)
-  const existingCodes = new Set(
-    db.prepare('SELECT code FROM krx_listings').all().map((r) => r.code)
-  );
+  const existingRows = await db.all('SELECT code FROM krx_listings');
+  const existingCodes = new Set(existingRows.map((r) => r.code));
 
   // 새로 추가할 것과 업데이트할 것 구분
   const newListings = listings.filter((l) => !existingCodes.has(l.code));
   
   // 기존에 있지만 market이 ETF/ETN이 아닌 것들도 업데이트
-  const updateListings = listings.filter((l) => {
-    if (!existingCodes.has(l.code)) return false;
-    const existing = db.prepare('SELECT market FROM krx_listings WHERE code = ?').get(l.code);
-    return existing && existing.market !== 'ETF' && existing.market !== 'ETN';
-  });
+  const updateListings = [];
+  for (const l of listings) {
+    if (!existingCodes.has(l.code)) continue;
+    const existing = await db.get('SELECT market FROM krx_listings WHERE code = $1', l.code);
+    if (existing && existing.market !== 'ETF' && existing.market !== 'ETN') {
+      updateListings.push(l);
+    }
+  }
 
   // 모든 ETF/ETN을 upsert (기존 것도 name_ko와 market 업데이트)
-  upsertListings(listings);
+  await upsertListings(listings);
   
   console.log(`[ETF Update] Processed ${listings.length} ETF/ETN listings`);
   console.log(`[ETF Update] - New: ${newListings.length}`);

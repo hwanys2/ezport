@@ -6,7 +6,6 @@ const yahooFinanceModule = require('yahoo-finance2');
 const { z } = require('zod');
 const path = require('path');
 const { db, initDb } = require('./db');
-const { hasAnyListings, searchByAny } = require('./krx');
 const { searchAssets } = require('./search_handler');
 const { priceUpdateQueue, exchangeRateQueue, seedQueue, marketIndexQueue } = require('./queue');
 const {

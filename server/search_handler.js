@@ -8,14 +8,13 @@ function uniqBySymbol(items) {
   return [...map.values()];
 }
 
-function ensureExactTickerFirst(db, trimmed, items) {
+async function ensureExactTickerFirst(db, trimmed, items) {
   const q = (trimmed || '').trim().toUpperCase();
   if (!q) return items;
-  const exact = db
-    .prepare(
-      'SELECT symbol, name, name_ko, exchange, currency FROM assets WHERE UPPER(TRIM(symbol)) = ?'
-    )
-    .get(q);
+  const exact = await db.get(
+    'SELECT symbol, name, name_ko, exchange, currency FROM assets WHERE UPPER(TRIM(symbol)) = $1',
+    q
+  );
   if (!exact) return items;
   const exactItem = {
     symbol: exact.symbol,
@@ -34,14 +33,15 @@ async function searchAssets(db, trimmed) {
   // STEP 1: Check search cache (1 hour)
   const cacheKey = trimmed.toLowerCase();
   const cacheThreshold = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  const cached = db
-    .prepare('SELECT * FROM search_cache WHERE query = ? AND updated_at > ?')
-    .get(cacheKey, cacheThreshold);
+  const cached = await db.get(
+    'SELECT * FROM search_cache WHERE query = $1 AND updated_at > $2',
+    cacheKey, cacheThreshold
+  );
 
   if (cached) {
     try {
       const parsed = JSON.parse(cached.results);
-      const fixed = ensureExactTickerFirst(db, trimmed, parsed.items || []);
+      const fixed = await ensureExactTickerFirst(db, trimmed, parsed.items || []);
       return { items: fixed.slice(0, 20) };
     } catch {
       // Invalid cache, continue
@@ -52,8 +52,8 @@ async function searchAssets(db, trimmed) {
   const like = `%${trimmed}%`; // LIKE 패턴 (함수 전체에서 사용)
 
   // STEP 2: Search KRX listings (한글 이름, 코드)
-  if (hasAnyListings()) {
-    const krxCandidates = searchByAny(trimmed, 15);
+  if (await hasAnyListings()) {
+    const krxCandidates = await searchByAny(trimmed, 15);
     krxCandidates.forEach((candidate) => {
       const symbol = `${candidate.code}.${(candidate.yahoo_suffix || 'KS').toUpperCase()}`;
       results.push({
@@ -68,27 +68,26 @@ async function searchAssets(db, trimmed) {
 
   // STEP 3: Search US stock listings (미국 주식 목록)
   try {
-    const usStockResults = db
-      .prepare(`
+    const usStockResults = await db.all(
+      `
         SELECT symbol, name, exchange, NULL as name_ko, NULL as currency
         FROM us_stock_listings
-        WHERE symbol LIKE ? OR name LIKE ?
+        WHERE symbol LIKE $1 OR name LIKE $2
         ORDER BY 
           CASE
-            WHEN symbol = ? THEN 0
-            WHEN name = ? THEN 1
-            WHEN symbol LIKE ? THEN 2
-            WHEN name LIKE ? THEN 3
+            WHEN symbol = $3 THEN 0
+            WHEN name = $4 THEN 1
+            WHEN symbol LIKE $5 THEN 2
+            WHEN name LIKE $6 THEN 3
             ELSE 4
           END,
           LENGTH(symbol) ASC
         LIMIT 10
-      `)
-      .all(
-        like, like,
-        trimmed, trimmed,
-        `${trimmed}%`, `${trimmed}%`
-      );
+      `,
+      like, like,
+      trimmed, trimmed,
+      `${trimmed}%`, `${trimmed}%`
+    );
     
     usStockResults.forEach((stock) => {
       results.push({
@@ -101,35 +100,34 @@ async function searchAssets(db, trimmed) {
     });
   } catch (error) {
     // us_stock_listings 테이블이 없으면 무시 (아직 업데이트 안 함)
-    if (!error.message.includes('no such table')) {
+    if (!error.message.includes('no such table') && !error.message.includes('does not exist')) {
       console.error('[Search] US stock search error:', error?.message);
     }
   }
 
   // STEP 4: Search assets table (영문 이름, 한글 이름, 심볼)
-  const assetsResults = db
-    .prepare(`
+  const assetsResults = await db.all(
+    `
       SELECT symbol, name, name_ko, exchange, currency
       FROM assets
-      WHERE symbol LIKE ? OR name LIKE ? OR name_ko LIKE ?
+      WHERE symbol LIKE $1 OR name LIKE $2 OR name_ko LIKE $3
       ORDER BY 
         CASE
-          WHEN symbol = ? THEN 0
-          WHEN name = ? THEN 1
-          WHEN name_ko = ? THEN 2
-          WHEN symbol LIKE ? THEN 3
-          WHEN name LIKE ? THEN 4
-          WHEN name_ko LIKE ? THEN 5
+          WHEN symbol = $4 THEN 0
+          WHEN name = $5 THEN 1
+          WHEN name_ko = $6 THEN 2
+          WHEN symbol LIKE $7 THEN 3
+          WHEN name LIKE $8 THEN 4
+          WHEN name_ko LIKE $9 THEN 5
           ELSE 6
         END,
         LENGTH(symbol) ASC
       LIMIT 15
-    `)
-    .all(
-      like, like, like,
-      trimmed, trimmed, trimmed,
-      `${trimmed}%`, `${trimmed}%`, `${trimmed}%`
-    );
+    `,
+    like, like, like,
+    trimmed, trimmed, trimmed,
+    `${trimmed}%`, `${trimmed}%`, `${trimmed}%`
+  );
 
   assetsResults.forEach((asset) => {
     results.push({
@@ -158,7 +156,7 @@ async function searchAssets(db, trimmed) {
     return priority(symA) - priority(symB);
   });
 
-  const withExactFirst = ensureExactTickerFirst(db, trimmed, uniqueResults);
+  const withExactFirst = await ensureExactTickerFirst(db, trimmed, uniqueResults);
 
   const response = {
     items: withExactFirst.slice(0, 20),

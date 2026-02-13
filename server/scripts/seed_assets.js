@@ -4,15 +4,15 @@ const { seedQueue } = require('../queue');
 const { hasAnyListings, getAllListings } = require('../krx');
 
 async function main() {
-  initDb();
+  await initDb();
 
-  if (!hasAnyListings()) {
+  if (!(await hasAnyListings())) {
     console.error('[Seed] No KRX listings found. Run `npm run krx:update` first.');
     process.exit(1);
   }
 
   const limit = parseInt(process.argv[2], 10) || null;
-  const listings = getAllListings(limit);
+  const listings = await getAllListings(limit);
 
   if (listings.length === 0) {
     console.log('[Seed] No listings to process');

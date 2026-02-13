@@ -43,7 +43,7 @@ function findIndex(headers, candidates) {
 }
 
 async function main() {
-  initDb();
+  await initDb();
 
   console.log('[krx:update] downloading:', KIND_XLS_URL);
   const res = await fetch(KIND_XLS_URL, {
@@ -75,7 +75,7 @@ async function main() {
     }))
     .filter((r) => r.code && r.name_ko);
 
-  upsertListings(listings);
+  await upsertListings(listings);
   console.log('[krx:update] upserted', listings.length, 'rows');
 }
 
