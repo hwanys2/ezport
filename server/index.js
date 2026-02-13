@@ -1044,14 +1044,12 @@ app.post('/api/portfolios/:id/items', authMiddleware, async (req, res) => {
       });
     }
 
-    const insertItem = db.prepare(`
+    await db.run(`
       INSERT INTO portfolio_items (
         portfolio_id, asset_id, target_weight, tolerance, entry_price,
         initial_quantity, current_quantity, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    insertItem.run(
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `,
       portfolio.id,
       asset.id,
       parse.data.targetWeight,

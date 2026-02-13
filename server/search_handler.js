@@ -165,16 +165,16 @@ async function searchAssets(db, trimmed) {
   };
 
   console.log(`[Search] Found ${uniqueResults.length} results for "${trimmed}"`);
-  saveSearchCache(db, cacheKey, response);
+  await saveSearchCache(db, cacheKey, response);
   return response;
 }
 
-function saveSearchCache(db, cacheKey, response) {
+async function saveSearchCache(db, cacheKey, response) {
   try {
-    const upsertCache = db.prepare(
-      'INSERT INTO search_cache (query, results, updated_at) VALUES (?, ?, ?) ON CONFLICT(query) DO UPDATE SET results = excluded.results, updated_at = excluded.updated_at'
+    await db.run(
+      'INSERT INTO search_cache (query, results, updated_at) VALUES ($1, $2, $3) ON CONFLICT(query) DO UPDATE SET results = excluded.results, updated_at = excluded.updated_at',
+      cacheKey, JSON.stringify(response), new Date().toISOString()
     );
-    upsertCache.run(cacheKey, JSON.stringify(response), new Date().toISOString());
   } catch (e) {
     console.error('[Cache] Save failed:', e.message);
   }

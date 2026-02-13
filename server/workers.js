@@ -28,14 +28,13 @@ async function fetchExchangeRate(yahooFinance) {
     const rate = quote.regularMarketPrice ?? quote.postMarketPrice ?? quote.preMarketPrice ?? null;
     
     if (rate && rate > 0) {
-      const upsert = db.prepare(`
+      await db.run(`
         INSERT INTO exchange_rates (currency_pair, rate, updated_at)
-        VALUES (?, ?, ?)
+        VALUES ($1, $2, $3)
         ON CONFLICT(currency_pair) DO UPDATE SET
           rate = excluded.rate,
           updated_at = excluded.updated_at
-      `);
-      upsert.run('USD/KRW', rate, new Date().toISOString());
+      `, 'USD/KRW', rate, new Date().toISOString());
       console.log(`[Exchange Rate] USD/KRW updated: ${rate}`);
       return rate;
     }
@@ -57,17 +56,16 @@ async function fetchYahooPrice(yahooFinance, symbol) {
     const currency = quote.currency;
     
     if (price && price > 0) {
-      const upsert = db.prepare(`
+      await db.run(`
         INSERT INTO latest_prices (symbol, price, name, exchange, currency, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT(symbol) DO UPDATE SET
           price = excluded.price,
           name = excluded.name,
           exchange = excluded.exchange,
           currency = excluded.currency,
           updated_at = excluded.updated_at
-      `);
-      upsert.run(symbol, price, name, exchange, currency, new Date().toISOString());
+      `, symbol, price, name, exchange, currency, new Date().toISOString());
       return { symbol, price, name, exchange, currency };
     }
     return null;
@@ -138,30 +136,27 @@ function setupSeedWorker(yahooFinance) {
     
     const result = await fetchYahooPrice(yahooFinance, symbol);
     if (result) {
-      const upsert = db.prepare(`
-        INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(symbol) DO UPDATE SET
-          name = excluded.name,
-          name_ko = excluded.name_ko,
-          exchange = excluded.exchange,
-          currency = excluded.currency
-      `);
-      
       try {
-        upsert.run(symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
+        await db.run(`
+          INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT(symbol) DO UPDATE SET
+            name = excluded.name,
+            name_ko = excluded.name_ko,
+            exchange = excluded.exchange,
+            currency = excluded.currency
+        `, symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
         
-        const upsertPrice = db.prepare(`
+        await db.run(`
           INSERT INTO latest_prices (symbol, price, name, exchange, currency, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?)
+          VALUES ($1, $2, $3, $4, $5, $6)
           ON CONFLICT(symbol) DO UPDATE SET
             price = excluded.price,
             name = excluded.name,
             exchange = excluded.exchange,
             currency = excluded.currency,
             updated_at = excluded.updated_at
-        `);
-        upsertPrice.run(symbol, result.price, result.name, result.exchange, result.currency, new Date().toISOString());
+        `, symbol, result.price, result.name, result.exchange, result.currency, new Date().toISOString());
         
         console.log(`[Seed Worker] ✓ ${symbol} (${displayName}) registered: ${result.price}`);
         return { success: true, symbol, name_ko: displayName };
@@ -216,33 +211,6 @@ function setupExchangeRateWorker(yahooFinance) {
 }
 
 function setupMarketIndexWorker(yahooFinance) {
-  const upsertMetric = db.prepare(`
-    INSERT INTO index_metrics (
-      symbol,
-      slug,
-      label,
-      short_label,
-      region,
-      current_price,
-      high_3y,
-      percent_drop,
-      currency,
-      exchange,
-      updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(symbol) DO UPDATE SET
-      slug = excluded.slug,
-      label = excluded.label,
-      short_label = excluded.short_label,
-      region = excluded.region,
-      current_price = excluded.current_price,
-      high_3y = excluded.high_3y,
-      percent_drop = excluded.percent_drop,
-      currency = excluded.currency,
-      exchange = excluded.exchange,
-      updated_at = excluded.updated_at
-  `);
-
   marketIndexQueue.process(async (job) => {
     const { symbol } = job.data;
     const indexInfo = MARKET_INDICES.find((entry) => entry.symbol === symbol);
@@ -289,7 +257,32 @@ function setupMarketIndexWorker(yahooFinance) {
     const currency = chart.meta?.currency || null;
     const updatedAt = new Date().toISOString();
 
-    upsertMetric.run(
+    await db.run(`
+      INSERT INTO index_metrics (
+        symbol,
+        slug,
+        label,
+        short_label,
+        region,
+        current_price,
+        high_3y,
+        percent_drop,
+        currency,
+        exchange,
+        updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT(symbol) DO UPDATE SET
+        slug = excluded.slug,
+        label = excluded.label,
+        short_label = excluded.short_label,
+        region = excluded.region,
+        current_price = excluded.current_price,
+        high_3y = excluded.high_3y,
+        percent_drop = excluded.percent_drop,
+        currency = excluded.currency,
+        exchange = excluded.exchange,
+        updated_at = excluded.updated_at
+    `,
       symbol,
       indexInfo.slug,
       indexInfo.label,
