@@ -137,48 +137,25 @@ function setupSeedWorker(yahooFinance) {
     const result = await fetchYahooPrice(yahooFinance, symbol);
     if (result) {
       try {
-        // UPSERT: 트랜잭션 내에서 원자적으로 처리하여 동시성 문제 방지
-        await db.transaction(async (tx) => {
-          const existing = await tx.get('SELECT id, symbol FROM assets WHERE symbol = $1', symbol);
-          
-          if (existing) {
-            // 기존 레코드 업데이트
-            const updateResult = await tx.run(`
-              UPDATE assets 
-              SET name = $1, name_ko = $2, exchange = $3, currency = $4
-              WHERE symbol = $5
-            `, result.name, name_ko || null, result.exchange, result.currency, symbol);
-            console.log(`[Seed Worker] ✓ Updated assets table: ${symbol} (${result.name}), rows affected: ${updateResult.changes}`);
-          } else {
-            // 새 레코드 삽입 시도
-            try {
-              const insertResult = await tx.run(`
-                INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6)
-              `, symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
-              console.log(`[Seed Worker] ✓ Inserted into assets table: ${symbol} (${result.name}), rows affected: ${insertResult.changes}`);
-            } catch (insertError) {
-              // 동시성 문제로 INSERT 실패 시 UPDATE로 전환
-              if (insertError.message && (insertError.message.includes('duplicate key') || insertError.message.includes('unique constraint'))) {
-                const updateResult = await tx.run(`
-                  UPDATE assets 
-                  SET name = $1, name_ko = $2, exchange = $3, currency = $4
-                  WHERE symbol = $5
-                `, result.name, name_ko || null, result.exchange, result.currency, symbol);
-                console.log(`[Seed Worker] ✓ Updated assets table (after conflict): ${symbol} (${result.name}), rows affected: ${updateResult.changes}`);
-              } else {
-                throw insertError;
-              }
-            }
-          }
-        });
+        // UPSERT: latest_prices와 동일한 방식으로 ON CONFLICT 사용 (트랜잭션 없이)
+        await db.run(`
+          INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (symbol) DO UPDATE SET
+            name = excluded.name,
+            name_ko = excluded.name_ko,
+            exchange = excluded.exchange,
+            currency = excluded.currency
+        `, symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
+        
+        console.log(`[Seed Worker] ✓ Upserted into assets table: ${symbol} (${result.name})`);
         
         // 저장 확인
         const verify = await db.get('SELECT symbol, name, exchange, currency FROM assets WHERE symbol = $1', symbol);
         if (verify) {
           console.log(`[Seed Worker] ✓ Verified in assets: ${JSON.stringify(verify)}`);
         } else {
-          console.error(`[Seed Worker] ✗ WARNING: ${symbol} not found in assets table after insert/update!`);
+          console.error(`[Seed Worker] ✗ WARNING: ${symbol} not found in assets table after upsert!`);
         }
         
         await db.run(`
