@@ -170,7 +170,7 @@ async function searchAssets(db, trimmed) {
 async function saveSearchCache(db, cacheKey, response) {
   try {
     await db.run(
-      'INSERT INTO search_cache (query, results, updated_at) VALUES ($1, $2, $3) ON CONFLICT(query) DO UPDATE SET results = excluded.results, updated_at = excluded.updated_at',
+      'INSERT INTO search_cache (query, results, updated_at) VALUES ($1, $2, $3) ON CONFLICT (query) DO UPDATE SET results = excluded.results, updated_at = excluded.updated_at',
       cacheKey, JSON.stringify(response), new Date().toISOString()
     );
   } catch (e) {

@@ -28,7 +28,7 @@ async function upsertListings(listings) {
       await tx.run(
         `INSERT INTO krx_listings (code, name_ko, market, yahoo_suffix, updated_at)
          VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT(code) DO UPDATE SET
+         ON CONFLICT (code) DO UPDATE SET
            name_ko=excluded.name_ko,
            market=excluded.market,
            yahoo_suffix=excluded.yahoo_suffix,

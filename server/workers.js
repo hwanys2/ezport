@@ -31,7 +31,7 @@ async function fetchExchangeRate(yahooFinance) {
       await db.run(`
         INSERT INTO exchange_rates (currency_pair, rate, updated_at)
         VALUES ($1, $2, $3)
-        ON CONFLICT(currency_pair) DO UPDATE SET
+        ON CONFLICT (currency_pair) DO UPDATE SET
           rate = excluded.rate,
           updated_at = excluded.updated_at
       `, 'USD/KRW', rate, new Date().toISOString());
@@ -59,7 +59,7 @@ async function fetchYahooPrice(yahooFinance, symbol) {
       await db.run(`
         INSERT INTO latest_prices (symbol, price, name, exchange, currency, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT(symbol) DO UPDATE SET
+        ON CONFLICT (symbol) DO UPDATE SET
           price = excluded.price,
           name = excluded.name,
           exchange = excluded.exchange,
@@ -140,7 +140,7 @@ function setupSeedWorker(yahooFinance) {
         await db.run(`
           INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
           VALUES ($1, $2, $3, $4, $5, $6)
-          ON CONFLICT(symbol) DO UPDATE SET
+          ON CONFLICT (symbol) DO UPDATE SET
             name = excluded.name,
             name_ko = excluded.name_ko,
             exchange = excluded.exchange,
@@ -150,7 +150,7 @@ function setupSeedWorker(yahooFinance) {
         await db.run(`
           INSERT INTO latest_prices (symbol, price, name, exchange, currency, updated_at)
           VALUES ($1, $2, $3, $4, $5, $6)
-          ON CONFLICT(symbol) DO UPDATE SET
+          ON CONFLICT (symbol) DO UPDATE SET
             price = excluded.price,
             name = excluded.name,
             exchange = excluded.exchange,
@@ -271,7 +271,7 @@ function setupMarketIndexWorker(yahooFinance) {
         exchange,
         updated_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      ON CONFLICT(symbol) DO UPDATE SET
+      ON CONFLICT (symbol) DO UPDATE SET
         slug = excluded.slug,
         label = excluded.label,
         short_label = excluded.short_label,
