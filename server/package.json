@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node index.js",
+    "migrate:postgres": "node scripts/migrate_to_postgres.js",
     "krx:update": "node scripts/update_krx.js",
     "etf:update": "node scripts/update_etf.js",
     "us:update": "node scripts/update_us_stocks.js",
