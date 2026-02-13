@@ -742,47 +742,43 @@ app.get('/api/portfolios/public', async (req, res) => {
   const limit = parseInt(req.query.limit) || 6;
   
   // 공개 포트폴리오 랜덤 조회 (종목 3개 이상인 포트폴리오만)
-  const portfolios = db
-    .prepare(`
+  const portfolios = await db.all(`
       SELECT portfolios.*, users.email
       FROM portfolios
       JOIN users ON portfolios.user_id = users.id
-      WHERE portfolios.is_public = 1
+      WHERE portfolios.is_public = TRUE
         AND (
           SELECT COUNT(*)
           FROM portfolio_items
           WHERE portfolio_items.portfolio_id = portfolios.id
         ) >= 3
       ORDER BY RANDOM()
-      LIMIT ?
-    `)
-    .all(limit);
+      LIMIT $1
+    `, limit);
 
   if (!portfolios.length) {
     return res.json({ items: [] });
   }
 
   const portfolioIds = portfolios.map((p) => p.id);
-  const rows = db
-    .prepare(
+  const placeholders = portfolioIds.map((_, i) => `$${i + 1}`).join(',');
+  const rows = await db.all(
       `
       SELECT portfolio_items.*, assets.symbol, assets.name, assets.name_ko, assets.exchange, assets.currency
       FROM portfolio_items
       JOIN assets ON portfolio_items.asset_id = assets.id
-      WHERE portfolio_items.portfolio_id IN (${portfolioIds.map(() => '?').join(',')})
+      WHERE portfolio_items.portfolio_id IN (${placeholders})
       ORDER BY portfolio_items.id ASC
-    `
-    )
-    .all(...portfolioIds);
+    `,
+    ...portfolioIds
+  );
 
   const symbols = [...new Set(rows.map((row) => row.symbol))];
   const latest = {};
   
   // 캐시된 가격만 조회
-  symbols.forEach((symbol) => {
-    const cached = db
-      .prepare('SELECT * FROM latest_prices WHERE symbol = ?')
-      .get(symbol);
+  for (const symbol of symbols) {
+    const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
     
     if (cached && cached.price != null) {
       latest[symbol] = {
@@ -793,38 +789,35 @@ app.get('/api/portfolios/public', async (req, res) => {
         updated_at: cached.updated_at || null,
       };
     }
-  });
+  }
 
-  const grouped = portfolios.map((portfolio) => {
+  const grouped = await Promise.all(portfolios.map(async (portfolio) => {
     const items = rows.filter((row) => row.portfolio_id === portfolio.id);
-    const view = computePortfolioView(portfolio, items, latest);
+    const view = await computePortfolioView(portfolio, items, latest);
     return {
       ...view,
       owner_email: portfolio.email,
     };
-  });
+  }));
 
   return res.json({ items: grouped });
 });
 
 app.get('/api/portfolios/:id', authMiddleware, async (req, res) => {
-  const portfolio = db
-    .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.user.id);
+  const portfolio = await db.get('SELECT * FROM portfolios WHERE id = $1 AND user_id = $2', req.params.id, req.user.id);
   if (!portfolio) {
     return res.status(404).json({ error: 'Not found' });
   }
-  const rows = db
-    .prepare(
+  const rows = await db.all(
       `
       SELECT portfolio_items.*, assets.symbol, assets.name, assets.name_ko, assets.exchange, assets.currency
       FROM portfolio_items
       JOIN assets ON portfolio_items.asset_id = assets.id
-      WHERE portfolio_items.portfolio_id = ?
+      WHERE portfolio_items.portfolio_id = $1
       ORDER BY portfolio_items.id ASC
-    `
-    )
-    .all(portfolio.id);
+    `,
+    portfolio.id
+  );
   const symbols = [...new Set(rows.map((row) => row.symbol))];
   
   // 상세 페이지에서만 가격 업데이트 체크 및 큐에 추가
@@ -833,14 +826,14 @@ app.get('/api/portfolios/:id', authMiddleware, async (req, res) => {
   
   // USD 종목이 있으면 환율 확인
   if (rows.length > 0) {
-    ensureExchangeRate(rows, latest);
+    await ensureExchangeRate(rows, latest);
   }
   
-  const view = computePortfolioView(portfolio, rows, latest);
+  const view = await computePortfolioView(portfolio, rows, latest);
   return res.json(view);
 });
 
-app.put('/api/portfolios/:id', authMiddleware, (req, res) => {
+app.put('/api/portfolios/:id', authMiddleware, async (req, res) => {
   const schema = z.object({
     name: z.string().min(1).optional(),
     memo: z.string().optional(),
@@ -852,88 +845,69 @@ app.put('/api/portfolios/:id', authMiddleware, (req, res) => {
     return res.status(400).json({ error: 'Invalid payload' });
   }
 
-  const portfolio = db
-    .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.user.id);
+  const portfolio = await db.get('SELECT * FROM portfolios WHERE id = $1 AND user_id = $2', req.params.id, req.user.id);
   if (!portfolio) {
     return res.status(404).json({ error: 'Not found' });
   }
 
   if (parse.data.name !== undefined) {
-    db.prepare('UPDATE portfolios SET name = ? WHERE id = ?').run(
-      parse.data.name,
-      req.params.id
-    );
+    await db.run('UPDATE portfolios SET name = $1 WHERE id = $2', parse.data.name, req.params.id);
   }
 
   if (parse.data.memo !== undefined) {
-    db.prepare('UPDATE portfolios SET memo = ? WHERE id = ?').run(
-      parse.data.memo || null,
-      req.params.id
-    );
+    await db.run('UPDATE portfolios SET memo = $1 WHERE id = $2', parse.data.memo || null, req.params.id);
   }
 
   if (parse.data.additionalCash !== undefined) {
-    db.prepare('UPDATE portfolios SET additional_cash = ? WHERE id = ?').run(
-      parse.data.additionalCash,
-      req.params.id
-    );
+    await db.run('UPDATE portfolios SET additional_cash = $1 WHERE id = $2', parse.data.additionalCash, req.params.id);
   }
 
   if (parse.data.isPublic !== undefined) {
-    db.prepare('UPDATE portfolios SET is_public = ? WHERE id = ?').run(
-      parse.data.isPublic ? 1 : 0,
-      req.params.id
-    );
+    await db.run('UPDATE portfolios SET is_public = $1 WHERE id = $2', parse.data.isPublic, req.params.id);
   }
 
   return res.json({ ok: true });
 });
 
-app.delete('/api/portfolios/:id', authMiddleware, (req, res) => {
-  const portfolio = db
-    .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.user.id);
+app.delete('/api/portfolios/:id', authMiddleware, async (req, res) => {
+  const portfolio = await db.get('SELECT * FROM portfolios WHERE id = $1 AND user_id = $2', req.params.id, req.user.id);
   if (!portfolio) {
     return res.status(404).json({ error: 'Not found' });
   }
 
   // 포트폴리오 아이템 삭제
-  db.prepare('DELETE FROM portfolio_items WHERE portfolio_id = ?').run(req.params.id);
+  await db.run('DELETE FROM portfolio_items WHERE portfolio_id = $1', req.params.id);
   
   // 포트폴리오 삭제
-  db.prepare('DELETE FROM portfolios WHERE id = ?').run(req.params.id);
+  await db.run('DELETE FROM portfolios WHERE id = $1', req.params.id);
 
   return res.json({ ok: true });
 });
 
 app.post('/api/portfolios/:id/refresh', authMiddleware, async (req, res) => {
-  const portfolio = db
-    .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.user.id);
+  const portfolio = await db.get('SELECT * FROM portfolios WHERE id = $1 AND user_id = $2', req.params.id, req.user.id);
   if (!portfolio) {
     return res.status(404).json({ error: 'Not found' });
   }
-  const rows = db
-    .prepare(
+  const rows = await db.all(
       `
       SELECT portfolio_items.*, assets.symbol, assets.name, assets.name_ko, assets.exchange, assets.currency
       FROM portfolio_items
       JOIN assets ON portfolio_items.asset_id = assets.id
-      WHERE portfolio_items.portfolio_id = ?
+      WHERE portfolio_items.portfolio_id = $1
       ORDER BY portfolio_items.id ASC
-    `
-    )
-    .all(portfolio.id);
+    `,
+    portfolio.id
+  );
   const symbols = [...new Set(rows.map((row) => row.symbol))];
   const latest = await getLatestPrices(symbols, true); // Force refresh
   
-  ensureExchangeRate(rows, latest);
-  const view = computePortfolioView(portfolio, rows, latest);
+  await ensureExchangeRate(rows, latest);
+  const view = await computePortfolioView(portfolio, rows, latest);
   return res.json(view);
 });
 
-app.put('/api/portfolio-items/:id', authMiddleware, (req, res) => {
+app.put('/api/portfolio-items/:id', authMiddleware, async (req, res) => {
   const schema = z.object({
     currentQuantity: z.number().nonnegative().optional(),
     tolerance: z.number().nonnegative().optional(),
@@ -944,16 +918,15 @@ app.put('/api/portfolio-items/:id', authMiddleware, (req, res) => {
   if (!parse.success) {
     return res.status(400).json({ error: 'Invalid payload' });
   }
-  const item = db
-    .prepare(
+  const item = await db.get(
       `
       SELECT portfolio_items.*, portfolios.user_id
       FROM portfolio_items
       JOIN portfolios ON portfolio_items.portfolio_id = portfolios.id
-      WHERE portfolio_items.id = ?
-    `
-    )
-    .get(req.params.id);
+      WHERE portfolio_items.id = $1
+    `,
+    req.params.id
+  );
 
   if (!item || item.user_id !== req.user.id) {
     return res.status(404).json({ error: 'Not found' });
@@ -961,20 +934,22 @@ app.put('/api/portfolio-items/:id', authMiddleware, (req, res) => {
 
   const updates = [];
   const values = [];
+  let paramIndex = 1;
+  
   if (parse.data.currentQuantity !== undefined) {
-    updates.push('current_quantity = ?');
+    updates.push(`current_quantity = $${paramIndex++}`);
     values.push(parse.data.currentQuantity);
   }
   if (parse.data.tolerance !== undefined) {
-    updates.push('tolerance = ?');
+    updates.push(`tolerance = $${paramIndex++}`);
     values.push(parse.data.tolerance);
   }
   if (parse.data.targetWeight !== undefined) {
-    updates.push('target_weight = ?');
+    updates.push(`target_weight = $${paramIndex++}`);
     values.push(parse.data.targetWeight);
   }
   if (parse.data.nickname !== undefined) {
-    updates.push('nickname = ?');
+    updates.push(`nickname = $${paramIndex++}`);
     values.push(parse.data.nickname || null);
   }
   if (!updates.length) {
@@ -982,9 +957,7 @@ app.put('/api/portfolio-items/:id', authMiddleware, (req, res) => {
   }
 
   values.push(req.params.id);
-  db.prepare(`UPDATE portfolio_items SET ${updates.join(', ')} WHERE id = ?`).run(
-    ...values
-  );
+  await db.run(`UPDATE portfolio_items SET ${updates.join(', ')} WHERE id = $${paramIndex}`, ...values);
 
   return res.json({ ok: true });
 });
@@ -1004,15 +977,12 @@ app.post('/api/portfolios/:id/items', authMiddleware, async (req, res) => {
     });
   }
 
-  const portfolio = db
-    .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.user.id);
+  const portfolio = await db.get('SELECT * FROM portfolios WHERE id = $1 AND user_id = $2', req.params.id, req.user.id);
   if (!portfolio) return res.status(404).json({ error: 'Not found' });
 
   const symbol = parse.data.symbol.toUpperCase();
   try {
-    const findAsset = db.prepare('SELECT * FROM assets WHERE symbol = ?');
-    let asset = findAsset.get(symbol);
+    let asset = await db.get('SELECT * FROM assets WHERE symbol = $1', symbol);
     
     if (!asset) {
       return res.status(400).json({ 
@@ -1021,7 +991,7 @@ app.post('/api/portfolios/:id/items', authMiddleware, async (req, res) => {
       });
     }
     
-    const cached = db.prepare('SELECT * FROM latest_prices WHERE symbol = ?').get(symbol);
+    const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
     
     let entryPrice = null;
     if (cached && cached.price != null) {
@@ -1066,23 +1036,22 @@ app.post('/api/portfolios/:id/items', authMiddleware, async (req, res) => {
   }
 });
 
-app.delete('/api/portfolio-items/:id', authMiddleware, (req, res) => {
-  const item = db
-    .prepare(
+app.delete('/api/portfolio-items/:id', authMiddleware, async (req, res) => {
+  const item = await db.get(
       `
       SELECT portfolio_items.*, portfolios.user_id
       FROM portfolio_items
       JOIN portfolios ON portfolio_items.portfolio_id = portfolios.id
-      WHERE portfolio_items.id = ?
-    `
-    )
-    .get(req.params.id);
+      WHERE portfolio_items.id = $1
+    `,
+    req.params.id
+  );
 
   if (!item || item.user_id !== req.user.id) {
     return res.status(404).json({ error: 'Not found' });
   }
 
-  db.prepare('DELETE FROM portfolio_items WHERE id = ?').run(req.params.id);
+  await db.run('DELETE FROM portfolio_items WHERE id = $1', req.params.id);
   return res.json({ ok: true });
 });
 
@@ -1116,7 +1085,7 @@ app.post('/api/queue/add-symbol', authMiddleware, async (req, res) => {
       // 6자리 숫자인지 확인
       if (/^\d{6}$/.test(code)) {
         // krx_listings에서 정보 확인
-        const listing = db.prepare('SELECT code, name_ko, market, yahoo_suffix FROM krx_listings WHERE code = ?').get(code.padStart(6, '0'));
+        const listing = await db.get('SELECT code, name_ko, market, yahoo_suffix FROM krx_listings WHERE code = $1', code.padStart(6, '0'));
         if (listing) {
           name_ko = listing.name_ko;
           market = listing.market;
@@ -1126,7 +1095,7 @@ app.post('/api/queue/add-symbol', authMiddleware, async (req, res) => {
     } else if (/^\d{6}$/.test(trimmed)) {
       // 6자리 숫자면 한국 주식으로 처리
       code = trimmed.padStart(6, '0');
-      const listing = db.prepare('SELECT code, name_ko, market, yahoo_suffix FROM krx_listings WHERE code = ?').get(code);
+      const listing = await db.get('SELECT code, name_ko, market, yahoo_suffix FROM krx_listings WHERE code = $1', code);
       if (listing) {
         name_ko = listing.name_ko;
         market = listing.market;
