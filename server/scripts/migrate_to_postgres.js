@@ -28,14 +28,21 @@ if (!connectionString) {
   process.exit(1);
 }
 
-// Railway CLI 환경 확인 (RAILWAY_ENVIRONMENT 변수 존재 여부)
-const isRailwayCLI = !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RAILWAY_PROJECT_ID;
-
-// 내부 호스트명 감지 시 경고 (로컬 환경에서만)
-if (connectionString.includes('postgres.railway.internal') && !isRailwayCLI) {
-  console.warn('[Migration] 내부 호스트명 감지. Railway CLI를 사용하거나 공개 연결 문자열을 사용하세요.');
-  console.warn('[Migration] Railway CLI 사용: railway run npm run migrate:postgres');
-  console.warn('[Migration] 또는 Railway 대시보드 → PostgreSQL → Connect → Public Network');
+// Railway 내부 호스트명은 로컬에서 접근 불가
+// Railway CLI의 railway run도 로컬에서 실행되므로 내부 호스트명 사용 불가
+if (connectionString.includes('postgres.railway.internal')) {
+  console.error('[Migration] ❌ 내부 호스트명은 로컬에서 접근할 수 없습니다.');
+  console.error('');
+  console.error('[Migration] 해결 방법:');
+  console.error('  1. Railway 대시보드 → PostgreSQL 서비스 → Connect 탭');
+  console.error('  2. "Public Network" 선택');
+  console.error('  3. 연결 문자열 복사 (postgresql://postgres:...@containers-us-west-xxx.railway.app:5432/railway)');
+  console.error('  4. 로컬에서 실행:');
+  console.error('     export DATABASE_URL="복사한_연결_문자열"');
+  console.error('     npm run migrate:postgres');
+  console.error('');
+  console.error('[Migration] 또는 Railway 서버에서 직접 실행:');
+  console.error('  Railway 대시보드 → 웹 서비스 → Deployments → 최신 배포 → Shell 탭에서 실행');
   process.exit(1);
 }
 
