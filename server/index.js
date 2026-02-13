@@ -1319,19 +1319,48 @@ app.get('/api/queue/status', authMiddleware, async (req, res) => {
 
 // 클라이언트 정적 파일 서빙 (프로덕션 환경) - API 라우트 이후에 배치
 if (process.env.NODE_ENV === 'production') {
-  const clientDistPath = path.join(__dirname, '../client/dist');
-  app.use(express.static(clientDistPath));
+  const fs = require('fs');
   
-  // API가 아닌 모든 요청은 클라이언트로 라우팅 (SPA 라우팅 지원)
-  // Express 5 호환: use()를 사용하여 모든 GET 요청 처리
-  app.use((req, res, next) => {
-    // API 경로는 제외
-    if (req.path.startsWith('/api/')) {
-      return next();
+  // 가능한 경로들 시도 (Nixpacks는 루트에서 빌드하고 server 디렉토리에서 실행)
+  const possiblePaths = [
+    path.join(__dirname, '../client/dist'),  // Nixpacks: /app/server -> /app/client/dist
+    path.join(__dirname, 'client/dist'),      // Docker: /app -> /app/client/dist
+    path.join(process.cwd(), 'client/dist'), // 현재 작업 디렉토리 기준
+  ];
+  
+  let clientDistPath = null;
+  for (const testPath of possiblePaths) {
+    if (fs.existsSync(testPath)) {
+      clientDistPath = testPath;
+      console.log(`[Static] 클라이언트 파일 경로 발견: ${clientDistPath}`);
+      break;
     }
-    // 정적 파일 요청도 제외 (이미 express.static이 처리)
-    res.sendFile(path.join(clientDistPath, 'index.html'));
-  });
+  }
+  
+  if (!clientDistPath) {
+    console.error('[Static] ❌ 클라이언트 빌드 디렉토리를 찾을 수 없습니다.');
+    console.error(`[Static] 현재 디렉토리: ${__dirname}`);
+    console.error(`[Static] 작업 디렉토리: ${process.cwd()}`);
+    console.error('[Static] 시도한 경로들:');
+    possiblePaths.forEach(p => console.error(`  - ${p} (존재: ${fs.existsSync(p)})`));
+    console.error('[Static] 빌드가 완료되었는지 확인하세요.');
+  } else {
+    app.use(express.static(clientDistPath));
+    
+    // API가 아닌 모든 요청은 클라이언트로 라우팅 (SPA 라우팅 지원)
+    app.use((req, res, next) => {
+      // API 경로는 제외
+      if (req.path.startsWith('/api/')) {
+        return next();
+      }
+      res.sendFile(path.join(clientDistPath, 'index.html'), (err) => {
+        if (err) {
+          console.error(`[Static] 파일 전송 오류: ${err.message}`);
+          res.status(404).send('Not Found');
+        }
+      });
+    });
+  }
 }
 
 app.listen(PORT, '0.0.0.0', () => {
