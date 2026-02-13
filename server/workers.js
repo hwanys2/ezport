@@ -137,31 +137,18 @@ function setupSeedWorker(yahooFinance) {
     const result = await fetchYahooPrice(yahooFinance, symbol);
     if (result) {
       try {
-        // UPSERT: INSERT 시도, 실패하면 UPDATE
-        try {
-          const insertResult = await db.run(`
-            INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-          `, symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
-          console.log(`[Seed Worker] ✓ Inserted into assets table: ${symbol} (${result.name}), rows affected: ${insertResult.changes}`);
-        } catch (insertError) {
-          // duplicate key 오류인 경우 UPDATE로 처리
-          if (insertError.message && (insertError.message.includes('duplicate key') || insertError.message.includes('unique constraint'))) {
-            const updateResult = await db.run(`
-              UPDATE assets 
-              SET name = $1, name_ko = $2, exchange = $3, currency = $4
-              WHERE symbol = $5
-            `, result.name, name_ko || null, result.exchange, result.currency, symbol);
-            if (updateResult.changes > 0) {
-              console.log(`[Seed Worker] ✓ Updated assets table: ${symbol} (${result.name}), rows affected: ${updateResult.changes}`);
-            } else {
-              console.log(`[Seed Worker] ✓ Updated assets table: ${symbol} (${result.name}) - no changes (already up to date)`);
-            }
-          } else {
-            // 다른 오류는 그대로 throw
-            throw insertError;
-          }
-        }
+        // UPSERT: PostgreSQL ON CONFLICT 사용 (symbol 컬럼의 UNIQUE 제약 조건 활용)
+        const upsertResult = await db.run(`
+          INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (symbol) DO UPDATE SET
+            name = excluded.name,
+            name_ko = excluded.name_ko,
+            exchange = excluded.exchange,
+            currency = excluded.currency
+        `, symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
+        
+        console.log(`[Seed Worker] ✓ Upserted into assets table: ${symbol} (${result.name}), rows affected: ${upsertResult.changes}`);
         
         // 저장 확인: assets 테이블에서 실제로 저장되었는지 확인 (여러 방법으로 검증)
         // 약간의 지연을 두어 커밋이 완료되도록 함
