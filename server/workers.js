@@ -137,21 +137,34 @@ function setupSeedWorker(yahooFinance) {
     const result = await fetchYahooPrice(yahooFinance, symbol);
     if (result) {
       try {
-        // 먼저 기존 레코드 확인
+        // UPSERT: 먼저 존재 여부 확인 후 처리 (동시성 문제 방지)
         const existing = await db.get('SELECT id FROM assets WHERE symbol = $1', symbol);
         if (existing) {
-          // 기존 레코드 업데이트 (created_at은 유지)
+          // 기존 레코드 업데이트
           await db.run(`
             UPDATE assets 
             SET name = $1, name_ko = $2, exchange = $3, currency = $4
             WHERE symbol = $5
           `, result.name, name_ko || null, result.exchange, result.currency, symbol);
         } else {
-          // 새 레코드 삽입
-          await db.run(`
-            INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-          `, symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
+          // 새 레코드 삽입 (id는 SERIAL로 자동 생성)
+          try {
+            await db.run(`
+              INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
+              VALUES ($1, $2, $3, $4, $5, $6)
+            `, symbol, result.name, name_ko || null, result.exchange, result.currency, new Date().toISOString());
+          } catch (insertError) {
+            // 동시성 문제로 인해 INSERT 실패 시 다시 UPDATE 시도
+            if (insertError.message && insertError.message.includes('duplicate key')) {
+              await db.run(`
+                UPDATE assets 
+                SET name = $1, name_ko = $2, exchange = $3, currency = $4
+                WHERE symbol = $5
+              `, result.name, name_ko || null, result.exchange, result.currency, symbol);
+            } else {
+              throw insertError;
+            }
+          }
         }
         
         await db.run(`
