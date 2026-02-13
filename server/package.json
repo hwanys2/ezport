@@ -20,12 +20,12 @@
   "description": "",
   "dependencies": {
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^12.6.2",
     "bull": "^4.16.5",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "iconv-lite": "^0.7.2",
     "jsonwebtoken": "^9.0.3",
+    "pg": "^8.18.0",
     "xlsx": "^0.18.5",
     "yahoo-finance2": "^3.11.2",
     "zod": "^4.3.5"

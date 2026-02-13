@@ -27,11 +27,13 @@ const YahooFinanceCtor = yahooFinanceModule?.default || yahooFinanceModule;
 const yahooFinance = new YahooFinanceCtor({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
 
 const MARKET_INDEX_CACHE_MINUTES = 60;
-const selectAllIndexMetricsStmt = db.prepare('SELECT * FROM index_metrics');
 
 // 서버 시작 시 큐 상태 확인 및 워커 시작 (큐 작업은 이어서 실행)
 (async () => {
   try {
+    // 데이터베이스 초기화
+    await initDb();
+    
     const seedCounts = await seedQueue.getJobCounts();
     const priceCounts = await priceUpdateQueue.getJobCounts();
     const exchangeCounts = await exchangeRateQueue.getJobCounts();
@@ -58,8 +60,14 @@ const selectAllIndexMetricsStmt = db.prepare('SELECT * FROM index_metrics');
     setupExchangeRateWorker(yahooFinance);
     setupSeedWorker(yahooFinance);
     setupMarketIndexWorker(yahooFinance);
+    
+    // 서버 시작 시 환율 확인 (6시간 간격)
+    await checkExchangeRate();
+    
+    // 서버 시작 시 시장 지수 확인
+    await checkMarketIndices();
   } catch (error) {
-    console.warn('[Init] 큐 상태 확인 중 오류:', error?.message);
+    console.warn('[Init] 초기화 중 오류:', error?.message);
     // 에러가 발생해도 워커는 시작
     setupPriceUpdateWorker(yahooFinance);
     setupExchangeRateWorker(yahooFinance);
@@ -69,8 +77,8 @@ const selectAllIndexMetricsStmt = db.prepare('SELECT * FROM index_metrics');
 })();
 
 // 서버 시작 시 환율 확인 (6시간 간격)
-const checkExchangeRate = () => {
-  const cached = db.prepare('SELECT * FROM exchange_rates WHERE currency_pair = ?').get('USD/KRW');
+async function checkExchangeRate() {
+  const cached = await db.get('SELECT * FROM exchange_rates WHERE currency_pair = $1', 'USD/KRW');
   const now = new Date();
   const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6시간 전
   
@@ -88,8 +96,7 @@ const checkExchangeRate = () => {
   } else {
     console.log('[Init] Exchange rate is up to date');
   }
-};
-checkExchangeRate();
+}
 
 async function queueMarketIndexUpdate(symbol) {
   try {
@@ -126,7 +133,7 @@ async function queueMarketIndexUpdate(symbol) {
 
 async function checkMarketIndices() {
   try {
-    const rows = selectAllIndexMetricsStmt.all();
+    const rows = await db.all('SELECT * FROM index_metrics');
     const rowMap = new Map(rows.map((row) => [row.symbol, row]));
     const now = Date.now();
     const threshold = now - MARKET_INDEX_CACHE_MINUTES * 60 * 1000;
@@ -151,8 +158,6 @@ async function checkMarketIndices() {
     console.warn('[Init] 시장 지수 확인 중 오류:', error?.message || error);
   }
 }
-
-checkMarketIndices();
 
 app.use(cors());
 app.use(express.json());
@@ -207,14 +212,14 @@ function queueExchangeRateUpdate() {
 }
 
 // USD 종목이 있는지 확인하고 환율 업데이트 큐에 추가 (6시간 간격)
-function ensureExchangeRate(rows, latestPrices) {
+async function ensureExchangeRate(rows, latestPrices) {
   const hasUsdStocks = rows.some(row => {
     const priceData = latestPrices[row.symbol];
     return priceData?.currency === 'USD' || row.currency === 'USD';
   });
   
   if (hasUsdStocks) {
-    const cached = db.prepare('SELECT * FROM exchange_rates WHERE currency_pair = ?').get('USD/KRW');
+    const cached = await db.get('SELECT * FROM exchange_rates WHERE currency_pair = $1', 'USD/KRW');
     const now = new Date();
     const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6시간 전
     
@@ -236,10 +241,8 @@ async function getLatestPrices(symbols, forceRefresh = false, context = '') {
   const cacheThreshold = new Date(Date.now() - PRICE_CACHE_HOURS * 60 * 60 * 1000);
   const now = new Date();
   
-  symbols.forEach((symbol) => {
-    const cached = db
-      .prepare('SELECT * FROM latest_prices WHERE symbol = ?')
-      .get(symbol);
+  for (const symbol of symbols) {
+    const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
     
     if (cached && cached.price != null) {
       result[symbol] = {
@@ -272,7 +275,7 @@ async function getLatestPrices(symbols, forceRefresh = false, context = '') {
       result[symbol] = null;
       staleDetails.push({ symbol, hoursAgo: 'N/A', updatedAt: null });
     }
-  });
+  }
   
   if (staleSymbols.length > 0) {
     console.log(`[Price Update] ${context}${staleSymbols.length}개 종목이 1시간 이상 지났습니다:`);
@@ -292,9 +295,9 @@ async function getLatestPrices(symbols, forceRefresh = false, context = '') {
   return result;
 }
 
-function computePortfolioView(portfolio, items, latestPrices) {
+async function computePortfolioView(portfolio, items, latestPrices) {
   // USD/KRW 환율 가져오기
-  const exchangeRateRow = db.prepare('SELECT rate FROM exchange_rates WHERE currency_pair = ?').get('USD/KRW');
+  const exchangeRateRow = await db.get('SELECT rate FROM exchange_rates WHERE currency_pair = $1', 'USD/KRW');
   const usdKrwRate = exchangeRateRow?.rate || null;
   
   const hasUsdStocks = items.some(item => {
@@ -376,7 +379,7 @@ app.get('/api/market-indices', authMiddleware, async (req, res) => {
   try {
     const now = new Date();
     const nowMs = now.getTime();
-    const rows = selectAllIndexMetricsStmt.all();
+    const rows = await db.all('SELECT * FROM index_metrics');
     const rowMap = new Map(rows.map((row) => [row.symbol, row]));
     const staleSymbols = new Set();
 
@@ -484,15 +487,16 @@ app.post('/api/auth/register', async (req, res) => {
   }
 
   const { username, password } = parse.data;
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(username);
+  const existing = await db.get('SELECT id FROM users WHERE email = $1', username);
   if (existing) {
     return res.status(409).json({ error: '이미 사용 중인 아이디입니다' });
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const result = db
-    .prepare('INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)')
-    .run(username, passwordHash, nowIso());
+  const result = await db.run(
+    'INSERT INTO users (email, password_hash, created_at) VALUES ($1, $2, $3) RETURNING id',
+    username, passwordHash, nowIso()
+  );
 
   const token = jwt.sign({ id: result.lastInsertRowid, email: username }, JWT_SECRET, {
     expiresIn: '7d',
@@ -511,7 +515,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 
   const { username, password } = parse.data;
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(username);
+  const user = await db.get('SELECT * FROM users WHERE email = $1', username);
   if (!user) {
     return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다' });
   }
@@ -571,12 +575,9 @@ app.post('/api/portfolios', authMiddleware, async (req, res) => {
 
   try {
     // Verify all symbols exist in assets DB and get prices
-    const findAsset = db.prepare('SELECT * FROM assets WHERE symbol = ?');
-    const getPriceCache = db.prepare('SELECT * FROM latest_prices WHERE symbol = ?');
-    
     const symbolData = {};
     for (const symbol of symbols) {
-      const asset = findAsset.get(symbol);
+      const asset = await db.get('SELECT * FROM assets WHERE symbol = $1', symbol);
       if (!asset) {
         return res.status(400).json({ 
           error: `종목 ${symbol}이(가) DB에 없습니다`,
@@ -584,7 +585,7 @@ app.post('/api/portfolios', authMiddleware, async (req, res) => {
         });
       }
       
-      const cached = getPriceCache.get(symbol);
+      const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
       if (!cached || !cached.price || cached.price <= 0) {
         return res.status(400).json({ 
           error: `종목 ${symbol}의 가격 정보가 없습니다`,
@@ -601,33 +602,29 @@ app.post('/api/portfolios', authMiddleware, async (req, res) => {
       };
     }
     
-    const insertPortfolio = db.prepare(
-      'INSERT INTO portfolios (user_id, name, initial_invest_amount, is_public, created_at) VALUES (?, ?, ?, ?, ?)'
-    );
-    const insertItem = db.prepare(`
-      INSERT INTO portfolio_items (
-        portfolio_id, asset_id, target_weight, tolerance, entry_price,
-        initial_quantity, current_quantity, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const tx = db.transaction(() => {
-      const portfolioResult = insertPortfolio.run(
+    const portfolioId = await db.transaction(async (tx) => {
+      const portfolioResult = await tx.run(
+        'INSERT INTO portfolios (user_id, name, initial_invest_amount, is_public, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING id',
         req.user.id,
         name,
         0,
-        isPublic ? 1 : 0,
+        isPublic,
         nowIso()
       );
-      const portfolioId = portfolioResult.lastInsertRowid;
+      const portfolioId = portfolioResult.rows?.[0]?.id || portfolioResult.lastInsertRowid;
 
-      items.forEach((item) => {
+      for (const item of items) {
         const symbol = item.symbol.toUpperCase();
         const data = symbolData[symbol];
         const entryPrice = data.price;
         const quantity = item.quantity;
         
-        insertItem.run(
+        await tx.run(`
+          INSERT INTO portfolio_items (
+            portfolio_id, asset_id, target_weight, tolerance, entry_price,
+            initial_quantity, current_quantity, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `,
           portfolioId,
           data.asset.id,
           item.targetWeight,
@@ -637,26 +634,22 @@ app.post('/api/portfolios', authMiddleware, async (req, res) => {
           quantity,
           nowIso()
         );
-      });
+      }
 
       return portfolioId;
     });
 
-    const portfolioId = tx();
-    const portfolio = db
-      .prepare('SELECT * FROM portfolios WHERE id = ? AND user_id = ?')
-      .get(portfolioId, req.user.id);
-    const rows = db
-      .prepare(
-        `
+    const portfolio = await db.get('SELECT * FROM portfolios WHERE id = $1 AND user_id = $2', portfolioId, req.user.id);
+    const rows = await db.all(
+      `
         SELECT portfolio_items.*, assets.symbol, assets.name, assets.name_ko, assets.exchange, assets.currency
         FROM portfolio_items
         JOIN assets ON portfolio_items.asset_id = assets.id
-        WHERE portfolio_items.portfolio_id = ?
+        WHERE portfolio_items.portfolio_id = $1
         ORDER BY portfolio_items.id ASC
-      `
-      )
-      .all(portfolioId);
+      `,
+      portfolioId
+    );
 
     // Get latest prices for view
     const latest = {};
@@ -670,8 +663,8 @@ app.post('/api/portfolios', authMiddleware, async (req, res) => {
       };
     });
 
-    ensureExchangeRate(rows, latest);
-    const view = computePortfolioView(portfolio, rows, latest);
+    await ensureExchangeRate(rows, latest);
+    const view = await computePortfolioView(portfolio, rows, latest);
     return res.status(201).json(view);
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Create failed' });
@@ -679,34 +672,30 @@ app.post('/api/portfolios', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/portfolios', authMiddleware, async (req, res) => {
-  const portfolios = db
-    .prepare('SELECT * FROM portfolios WHERE user_id = ? ORDER BY created_at DESC')
-    .all(req.user.id);
+  const portfolios = await db.all('SELECT * FROM portfolios WHERE user_id = $1 ORDER BY created_at DESC', req.user.id);
   if (!portfolios.length) {
     return res.json({ items: [] });
   }
   const portfolioIds = portfolios.map((p) => p.id);
-  const rows = db
-    .prepare(
+  const placeholders = portfolioIds.map((_, i) => `$${i + 1}`).join(',');
+  const rows = await db.all(
       `
       SELECT portfolio_items.*, assets.symbol, assets.name, assets.exchange, assets.currency
       FROM portfolio_items
       JOIN assets ON portfolio_items.asset_id = assets.id
-      WHERE portfolio_items.portfolio_id IN (${portfolioIds.map(() => '?').join(',')})
+      WHERE portfolio_items.portfolio_id IN (${placeholders})
       ORDER BY portfolio_items.id ASC
-    `
-    )
-    .all(...portfolioIds);
+    `,
+    ...portfolioIds
+  );
 
   // 목록에서는 가격 업데이트를 하지 않음 (캐시된 가격만 사용)
   const symbols = [...new Set(rows.map((row) => row.symbol))];
   const latest = {};
   
   // 캐시된 가격만 조회 (큐에 넣지 않음)
-  symbols.forEach((symbol) => {
-    const cached = db
-      .prepare('SELECT * FROM latest_prices WHERE symbol = ?')
-      .get(symbol);
+  for (const symbol of symbols) {
+    const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
     
     if (cached && cached.price != null) {
       latest[symbol] = {
@@ -717,17 +706,17 @@ app.get('/api/portfolios', authMiddleware, async (req, res) => {
         updated_at: cached.updated_at || null,
       };
     }
-  });
+  }
   
   // USD 종목이 있으면 환율 확인 (환율도 캐시된 것만 사용)
   if (rows.length > 0) {
-    ensureExchangeRate(rows, latest);
+    await ensureExchangeRate(rows, latest);
   }
 
-  const grouped = portfolios.map((portfolio) => {
+  const grouped = await Promise.all(portfolios.map(async (portfolio) => {
     const items = rows.filter((row) => row.portfolio_id === portfolio.id);
-    return computePortfolioView(portfolio, items, latest);
-  });
+    return await computePortfolioView(portfolio, items, latest);
+  }));
 
   return res.json({ items: grouped });
 });
