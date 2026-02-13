@@ -30,9 +30,9 @@ async function ensureExactTickerFirst(db, trimmed, items) {
 }
 
 async function searchAssets(db, trimmed) {
-  // STEP 1: Check search cache (1 hour)
+  // STEP 1: Check search cache (5분으로 단축하여 새로 등록한 종목이 빠르게 반영되도록)
   const cacheKey = trimmed.toLowerCase();
-  const cacheThreshold = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const cacheThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5분
   const cached = await db.get(
     'SELECT * FROM search_cache WHERE query = $1 AND updated_at > $2',
     cacheKey, cacheThreshold
@@ -41,8 +41,16 @@ async function searchAssets(db, trimmed) {
   if (cached) {
     try {
       const parsed = JSON.parse(cached.results);
+      // 캐시된 결과에도 최신 데이터 확인 (새로 등록한 종목 포함)
       const fixed = await ensureExactTickerFirst(db, trimmed, parsed.items || []);
-      return { items: fixed.slice(0, 20) };
+      // 정확한 티커 매칭이 있으면 캐시 무시하고 새로 검색
+      const exactMatch = fixed.find(item => 
+        (item.symbol || '').toUpperCase().trim() === trimmed.toUpperCase().trim()
+      );
+      if (exactMatch) {
+        return { items: fixed.slice(0, 20) };
+      }
+      // 정확한 매칭이 없으면 계속 진행하여 새로 검색
     } catch {
       // Invalid cache, continue
     }
@@ -108,22 +116,24 @@ async function searchAssets(db, trimmed) {
   }
 
   // STEP 4: Search assets table (영문 이름, 한글 이름, 심볼)
-  // ILIKE 사용: 대소문자 구분 없이 검색
+  // 대소문자 구분 없이 검색 (name이 NULL일 수 있으므로 COALESCE 사용)
   const upperTrimmed = trimmed.toUpperCase();
   const upperLike = `%${upperTrimmed}%`;
   const assetsResults = await db.all(
     `
       SELECT symbol, name, name_ko, exchange, currency
       FROM assets
-      WHERE UPPER(symbol) LIKE $1 OR UPPER(name) LIKE $2 OR name_ko LIKE $3
+      WHERE UPPER(symbol) LIKE $1 
+         OR (name IS NOT NULL AND UPPER(name) LIKE $2) 
+         OR (name_ko IS NOT NULL AND name_ko LIKE $3)
       ORDER BY 
         CASE
           WHEN UPPER(symbol) = $4 THEN 0
-          WHEN UPPER(name) = $5 THEN 1
-          WHEN name_ko = $6 THEN 2
+          WHEN name IS NOT NULL AND UPPER(name) = $5 THEN 1
+          WHEN name_ko IS NOT NULL AND name_ko = $6 THEN 2
           WHEN UPPER(symbol) LIKE $7 THEN 3
-          WHEN UPPER(name) LIKE $8 THEN 4
-          WHEN name_ko LIKE $9 THEN 5
+          WHEN name IS NOT NULL AND UPPER(name) LIKE $8 THEN 4
+          WHEN name_ko IS NOT NULL AND name_ko LIKE $9 THEN 5
           ELSE 6
         END,
         LENGTH(symbol) ASC
