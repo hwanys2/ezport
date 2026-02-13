@@ -68,25 +68,27 @@ async function searchAssets(db, trimmed) {
 
   // STEP 3: Search US stock listings (미국 주식 목록)
   try {
+    const upperTrimmed = trimmed.toUpperCase();
+    const upperLike = `%${upperTrimmed}%`;
     const usStockResults = await db.all(
       `
         SELECT symbol, name, exchange, NULL as name_ko, NULL as currency
         FROM us_stock_listings
-        WHERE symbol LIKE $1 OR name LIKE $2
+        WHERE UPPER(symbol) LIKE $1 OR UPPER(name) LIKE $2
         ORDER BY 
           CASE
-            WHEN symbol = $3 THEN 0
-            WHEN name = $4 THEN 1
-            WHEN symbol LIKE $5 THEN 2
-            WHEN name LIKE $6 THEN 3
+            WHEN UPPER(symbol) = $3 THEN 0
+            WHEN UPPER(name) = $4 THEN 1
+            WHEN UPPER(symbol) LIKE $5 THEN 2
+            WHEN UPPER(name) LIKE $6 THEN 3
             ELSE 4
           END,
           LENGTH(symbol) ASC
         LIMIT 10
       `,
-      like, like,
-      trimmed, trimmed,
-      `${trimmed}%`, `${trimmed}%`
+      upperLike, upperLike,
+      upperTrimmed, upperTrimmed,
+      `${upperTrimmed}%`, `${upperTrimmed}%`
     );
     
     usStockResults.forEach((stock) => {
@@ -106,27 +108,30 @@ async function searchAssets(db, trimmed) {
   }
 
   // STEP 4: Search assets table (영문 이름, 한글 이름, 심볼)
+  // ILIKE 사용: 대소문자 구분 없이 검색
+  const upperTrimmed = trimmed.toUpperCase();
+  const upperLike = `%${upperTrimmed}%`;
   const assetsResults = await db.all(
     `
       SELECT symbol, name, name_ko, exchange, currency
       FROM assets
-      WHERE symbol LIKE $1 OR name LIKE $2 OR name_ko LIKE $3
+      WHERE UPPER(symbol) LIKE $1 OR UPPER(name) LIKE $2 OR name_ko LIKE $3
       ORDER BY 
         CASE
-          WHEN symbol = $4 THEN 0
-          WHEN name = $5 THEN 1
+          WHEN UPPER(symbol) = $4 THEN 0
+          WHEN UPPER(name) = $5 THEN 1
           WHEN name_ko = $6 THEN 2
-          WHEN symbol LIKE $7 THEN 3
-          WHEN name LIKE $8 THEN 4
+          WHEN UPPER(symbol) LIKE $7 THEN 3
+          WHEN UPPER(name) LIKE $8 THEN 4
           WHEN name_ko LIKE $9 THEN 5
           ELSE 6
         END,
         LENGTH(symbol) ASC
       LIMIT 15
     `,
-    like, like, like,
-    trimmed, trimmed, trimmed,
-    `${trimmed}%`, `${trimmed}%`, `${trimmed}%`
+    upperLike, upperLike, like,
+    upperTrimmed, upperTrimmed, trimmed,
+    `${upperTrimmed}%`, `${upperTrimmed}%`, `${trimmed}%`
   );
 
   assetsResults.forEach((asset) => {
