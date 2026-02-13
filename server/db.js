@@ -306,6 +306,19 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_assets_symbol ON assets(symbol);
   `);
 
+  // CRITICAL: 시퀀스 동기화 (마이그레이션 후 필수)
+  // 마이그레이션 시 id를 명시적으로 넣었기 때문에 SERIAL 시퀀스가 업데이트되지 않음
+  // 시퀀스를 현재 최대 id로 설정하여 중복 키 오류 방지
+  try {
+    await db.query(`SELECT setval('assets_id_seq', COALESCE((SELECT MAX(id) FROM assets), 1), true);`);
+    await db.query(`SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1), true);`);
+    await db.query(`SELECT setval('portfolios_id_seq', COALESCE((SELECT MAX(id) FROM portfolios), 1), true);`);
+    await db.query(`SELECT setval('portfolio_items_id_seq', COALESCE((SELECT MAX(id) FROM portfolio_items), 1), true);`);
+    console.log('[DB] Sequences synchronized successfully');
+  } catch (error) {
+    console.warn('[DB] Error synchronizing sequences (may not exist yet):', error?.message);
+  }
+
   // 마이그레이션: is_public 컬럼 추가 (기존 테이블에 없으면 추가)
   try {
     const tableInfo = await db.query(`
