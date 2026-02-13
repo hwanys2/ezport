@@ -30,31 +30,7 @@ async function ensureExactTickerFirst(db, trimmed, items) {
 }
 
 async function searchAssets(db, trimmed) {
-  // STEP 1: Check search cache (5분으로 단축하여 새로 등록한 종목이 빠르게 반영되도록)
-  const cacheKey = trimmed.toLowerCase();
-  const cacheThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5분
-  const cached = await db.get(
-    'SELECT * FROM search_cache WHERE query = $1 AND updated_at > $2',
-    cacheKey, cacheThreshold
-  );
-
-  if (cached) {
-    try {
-      const parsed = JSON.parse(cached.results);
-      // 캐시된 결과에도 최신 데이터 확인 (새로 등록한 종목 포함)
-      const fixed = await ensureExactTickerFirst(db, trimmed, parsed.items || []);
-      // 정확한 티커 매칭이 있으면 캐시 무시하고 새로 검색
-      const exactMatch = fixed.find(item => 
-        (item.symbol || '').toUpperCase().trim() === trimmed.toUpperCase().trim()
-      );
-      if (exactMatch) {
-        return { items: fixed.slice(0, 20) };
-      }
-      // 정확한 매칭이 없으면 계속 진행하여 새로 검색
-    } catch {
-      // Invalid cache, continue
-    }
-  }
+  // 검색은 항상 최신 데이터를 보여줘야 하므로 캐시 사용 안 함
 
   const results = [];
   const like = `%${trimmed}%`; // LIKE 패턴 (함수 전체에서 사용)
@@ -178,7 +154,7 @@ async function searchAssets(db, trimmed) {
   };
 
   console.log(`[Search] Found ${uniqueResults.length} results for "${trimmed}"`);
-  await saveSearchCache(db, cacheKey, response);
+  // 검색은 항상 최신 데이터를 보여줘야 하므로 캐시 저장 안 함
   return response;
 }
 
