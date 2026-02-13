@@ -1342,10 +1342,21 @@ if (process.env.NODE_ENV === 'production') {
     console.error(`[Static] 현재 디렉토리: ${__dirname}`);
     console.error(`[Static] 작업 디렉토리: ${process.cwd()}`);
     console.error('[Static] 시도한 경로들:');
-    possiblePaths.forEach(p => console.error(`  - ${p} (존재: ${fs.existsSync(p)})`));
+    possiblePaths.forEach(p => {
+      const absPath = path.resolve(p);
+      console.error(`  - ${p} -> ${absPath} (존재: ${fs.existsSync(absPath)})`);
+    });
     console.error('[Static] 빌드가 완료되었는지 확인하세요.');
   } else {
-    app.use(express.static(clientDistPath));
+    // 절대 경로로 변환
+    const absoluteClientDistPath = path.resolve(clientDistPath);
+    const indexPath = path.join(absoluteClientDistPath, 'index.html');
+    
+    console.log(`[Static] ✅ 클라이언트 파일 서빙: ${absoluteClientDistPath}`);
+    console.log(`[Static] ✅ index.html 경로: ${indexPath}`);
+    console.log(`[Static] ✅ index.html 존재: ${fs.existsSync(indexPath)}`);
+    
+    app.use(express.static(absoluteClientDistPath));
     
     // API가 아닌 모든 요청은 클라이언트로 라우팅 (SPA 라우팅 지원)
     app.use((req, res, next) => {
@@ -1353,9 +1364,12 @@ if (process.env.NODE_ENV === 'production') {
       if (req.path.startsWith('/api/')) {
         return next();
       }
-      res.sendFile(path.join(clientDistPath, 'index.html'), (err) => {
+      // sendFile은 절대 경로 필요
+      res.sendFile(indexPath, (err) => {
         if (err) {
           console.error(`[Static] 파일 전송 오류: ${err.message}`);
+          console.error(`[Static] 시도한 경로: ${indexPath}`);
+          console.error(`[Static] 파일 존재 여부: ${fs.existsSync(indexPath)}`);
           res.status(404).send('Not Found');
         }
       });
