@@ -111,6 +111,17 @@ export default function PortfolioListPage({ user, onLogout }) {
     return `${days}일 전 업데이트`
   }
 
+  const formatDaysAgo = (isoString) => {
+    if (!isoString) return null
+    const date = new Date(isoString)
+    if (Number.isNaN(date.getTime())) return null
+    const diffMs = Date.now() - date.getTime()
+    const days = Math.floor(diffMs / (24 * 60 * 60 * 1000))
+    if (days < 1) return '오늘'
+    if (days === 1) return '1일 전'
+    return `${days}일 전`
+  }
+
   return (
     <div className="page">
       <TopBar user={user} onLogout={onLogout} />
@@ -248,7 +259,12 @@ export default function PortfolioListPage({ user, onLogout }) {
                       </span>
                     </div>
                     <div>
-                      <span className="market-index-value-label">3년 고가</span>
+                      <span className="market-index-value-label">
+                        3년 고가
+                        {indexInfo.high3yDate && formatDaysAgo(indexInfo.high3yDate) && (
+                          <span className="market-index-high-date">({formatDaysAgo(indexInfo.high3yDate)})</span>
+                        )}
+                      </span>
                       <span className="market-index-value">
                         {formatIndexValue(indexInfo.high3y, indexInfo.currency)}
                       </span>

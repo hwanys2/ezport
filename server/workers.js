@@ -240,12 +240,14 @@ function setupMarketIndexWorker(yahooFinance) {
       return { success: false, symbol, reason: 'no-data' };
     }
 
-    const high3y = chart.quotes.reduce((maxHigh, quote) => {
-      if (typeof quote.high === 'number' && !Number.isNaN(quote.high)) {
-        return quote.high > maxHigh ? quote.high : maxHigh;
+    let high3y = 0;
+    let high3yDate = null;
+    for (const quote of chart.quotes) {
+      if (typeof quote.high === 'number' && !Number.isNaN(quote.high) && quote.high > high3y) {
+        high3y = quote.high;
+        high3yDate = quote.date instanceof Date ? quote.date.toISOString() : (quote.date ? new Date(quote.date).toISOString() : null);
       }
-      return maxHigh;
-    }, 0);
+    }
 
     const lastQuote = chart.quotes[chart.quotes.length - 1] || {};
     const currentPriceCandidate = chart.meta?.regularMarketPrice ?? lastQuote.close ?? null;
@@ -277,11 +279,12 @@ function setupMarketIndexWorker(yahooFinance) {
         region,
         current_price,
         high_3y,
+        high_3y_date,
         percent_drop,
         currency,
         exchange,
         updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       ON CONFLICT (symbol) DO UPDATE SET
         slug = excluded.slug,
         label = excluded.label,
@@ -289,6 +292,7 @@ function setupMarketIndexWorker(yahooFinance) {
         region = excluded.region,
         current_price = excluded.current_price,
         high_3y = excluded.high_3y,
+        high_3y_date = excluded.high_3y_date,
         percent_drop = excluded.percent_drop,
         currency = excluded.currency,
         exchange = excluded.exchange,
@@ -301,6 +305,7 @@ function setupMarketIndexWorker(yahooFinance) {
       indexInfo.region,
       currentPrice,
       high3y || null,
+      high3yDate,
       percentDrop,
       currency,
       exchange,

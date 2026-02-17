@@ -408,6 +408,7 @@ app.get('/api/market-indices', authMiddleware, async (req, res) => {
         region: indexInfo.region,
         currentPrice: null,
         high3y: null,
+        high3yDate: null,
         percentDrop: null,
         currency: null,
         exchange: null,
@@ -423,6 +424,7 @@ app.get('/api/market-indices', authMiddleware, async (req, res) => {
 
         base.currentPrice = row.current_price ?? null;
         base.high3y = row.high_3y ?? null;
+        base.high3yDate = row.high_3y_date ?? null;
         base.percentDrop =
           typeof row.percent_drop === 'number' && !Number.isNaN(row.percent_drop)
             ? row.percent_drop

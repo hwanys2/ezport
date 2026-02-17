@@ -1460,6 +1460,13 @@ a.btn-primary {
   letter-spacing: 0.04em;
 }
 
+.market-index-high-date {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 4px;
+}
+
 .market-index-value {
   font-size: 0.95rem;
   font-weight: 600;
