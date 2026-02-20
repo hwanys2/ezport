@@ -14,6 +14,13 @@ const MARKET_INDICES = [
     region: '미국',
   },
   {
+    slug: 'sp500',
+    symbol: '^GSPC',
+    label: 'S&P 500 지수',
+    shortLabel: 'S&P 500',
+    region: '미국',
+  },
+  {
     slug: 'kospi',
     symbol: '^KS11',
     label: '코스피 지수',
