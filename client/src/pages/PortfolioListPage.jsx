@@ -277,6 +277,21 @@ export default function PortfolioListPage({ user, onLogout }) {
                     </div>
                   </div>
 
+                  {(indexInfo.coveredCall || indexInfo.etf) && (
+                    <div className="market-index-related">
+                      {indexInfo.coveredCall && (
+                        <span className="market-index-related-item">
+                          커버드콜: {indexInfo.coveredCall}
+                        </span>
+                      )}
+                      {indexInfo.etf && (
+                        <span className="market-index-related-item">
+                          ETF: {indexInfo.etf}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
                   <div className="market-index-footer">
                     <span className="market-index-updated">
                       {formatRelativeTime(indexInfo.updatedAt)}

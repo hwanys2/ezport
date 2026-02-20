@@ -422,6 +422,8 @@ app.get('/api/market-indices', authMiddleware, async (req, res) => {
         label: indexInfo.label,
         shortLabel: indexInfo.shortLabel,
         region: indexInfo.region,
+        coveredCall: indexInfo.coveredCall || null,
+        etf: indexInfo.etf || null,
         currentPrice: null,
         high3y: null,
         high3yDate: null,

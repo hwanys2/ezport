@@ -5,6 +5,8 @@ const MARKET_INDICES = [
     label: '다우존스 산업지수',
     shortLabel: 'Dow Jones',
     region: '미국',
+    coveredCall: 'DJIA',
+    etf: 'DIA',
   },
   {
     slug: 'nasdaq',
@@ -12,6 +14,8 @@ const MARKET_INDICES = [
     label: '나스닥 종합지수',
     shortLabel: 'NASDAQ',
     region: '미국',
+    coveredCall: null,
+    etf: null,
   },
   {
     slug: 'sp500',
@@ -19,6 +23,26 @@ const MARKET_INDICES = [
     label: 'S&P 500 지수',
     shortLabel: 'S&P 500',
     region: '미국',
+    coveredCall: 'JEPI',
+    etf: 'SPY',
+  },
+  {
+    slug: 'nasdaq100',
+    symbol: '^NDX',
+    label: '나스닥 100 지수',
+    shortLabel: 'NASDAQ 100',
+    region: '미국',
+    coveredCall: 'JEPQ',
+    etf: 'QQQ',
+  },
+  {
+    slug: 'china-internet',
+    symbol: '^HXC',
+    label: 'CSI Overseas China Internet',
+    shortLabel: 'China Internet',
+    region: '중국',
+    coveredCall: 'KLIP',
+    etf: 'KWEB',
   },
   {
     slug: 'kospi',
@@ -26,6 +50,8 @@ const MARKET_INDICES = [
     label: '코스피 지수',
     shortLabel: 'KOSPI',
     region: '대한민국',
+    coveredCall: null,
+    etf: null,
   },
   {
     slug: 'kosdaq',
@@ -33,6 +59,8 @@ const MARKET_INDICES = [
     label: '코스닥 지수',
     shortLabel: 'KOSDAQ',
     region: '대한민국',
+    coveredCall: null,
+    etf: null,
   },
 ];
 
