@@ -82,6 +82,20 @@ const MARKET_INDEX_CACHE_MINUTES = 60;
     
     // 서버 시작 시 시장 지수 확인
     await checkMarketIndices();
+
+    // 3시간마다 주요 지수 업데이트를 큐에 추가 (접속 없어도 알림 가능하도록)
+    const MARKET_INDEX_AUTO_UPDATE_INTERVAL_MS = 3 * 60 * 60 * 1000;
+    async function enqueueAllMarketIndices() {
+      console.log('[Schedule] 3시간 주기: 주요 지수 업데이트 큐에 추가');
+      for (const { symbol, shortLabel } of MARKET_INDICES) {
+        const result = await queueMarketIndexUpdate(symbol);
+        if (result?.queued) {
+          console.log(`[Schedule] 지수 큐 추가: ${shortLabel} (${symbol})`);
+        }
+      }
+    }
+    setTimeout(enqueueAllMarketIndices, MARKET_INDEX_AUTO_UPDATE_INTERVAL_MS);
+    setInterval(enqueueAllMarketIndices, MARKET_INDEX_AUTO_UPDATE_INTERVAL_MS);
   } catch (error) {
     console.warn('[Init] 초기화 중 오류:', error?.message);
     // 에러가 발생해도 워커는 시작
