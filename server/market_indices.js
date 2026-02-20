@@ -37,7 +37,7 @@ const MARKET_INDICES = [
   },
   {
     slug: 'china-internet',
-    symbol: '^HXC',
+    symbol: 'H30533.SS',
     label: 'CSI Overseas China Internet',
     shortLabel: 'China Internet',
     region: '중국',
