@@ -385,6 +385,16 @@ async function initDb() {
     console.warn('[DB Migration] Error checking/adding state column:', error?.message);
   }
 
+  // 마이그레이션: index_metrics.state NULL → 1(고가 상승중) 초기값 설정 (첫 업데이트부터 알림 정상 동작)
+  try {
+    const res = await db.query('UPDATE index_metrics SET state = 1 WHERE state IS NULL');
+    if (res.rowCount > 0) {
+      console.log('[DB Migration] index_metrics state 초기값 설정(고가 상승중):', res.rowCount, '건');
+    }
+  } catch (error) {
+    console.warn('[DB Migration] Error setting initial index_metrics state:', error?.message);
+  }
+
   // 마이그레이션: hwanys2@naver.com을 hwanys2로 변경
   try {
     const oldUser = await db.get('SELECT id FROM users WHERE email = $1', 'hwanys2@naver.com');
