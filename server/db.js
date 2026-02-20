@@ -369,6 +369,22 @@ async function initDb() {
     console.warn('[DB Migration] Error checking/adding high_3y_date column:', error?.message);
   }
 
+  // 마이그레이션: index_metrics.state 컬럼 추가 (주요 지수 현재 위치 1~6, 악화 시 알림용)
+  try {
+    const tableInfo = await db.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'index_metrics' AND column_name = 'state'
+    `);
+    if (tableInfo.rows.length === 0) {
+      console.log('[DB Migration] Adding state column to index_metrics table...');
+      await db.query('ALTER TABLE index_metrics ADD COLUMN state INTEGER');
+      console.log('[DB Migration] state column added successfully');
+    }
+  } catch (error) {
+    console.warn('[DB Migration] Error checking/adding state column:', error?.message);
+  }
+
   // 마이그레이션: hwanys2@naver.com을 hwanys2로 변경
   try {
     const oldUser = await db.get('SELECT id FROM users WHERE email = $1', 'hwanys2@naver.com');

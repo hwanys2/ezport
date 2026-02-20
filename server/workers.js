@@ -2,6 +2,8 @@
 const { priceUpdateQueue, seedQueue, exchangeRateQueue, marketIndexQueue } = require('./queue');
 const { db } = require('./db');
 const { MARKET_INDICES } = require('./market_indices');
+const { getIndexState, getStateLabel, isStateWorse } = require('./index_state');
+const { notify } = require('./telegram');
 
 // 마지막 Yahoo API 호출 시간 추적 (전역)
 let lastYahooApiCall = 0;
@@ -270,6 +272,19 @@ function setupMarketIndexWorker(yahooFinance) {
     const currency = chart.meta?.currency || null;
     const updatedAt = new Date().toISOString();
 
+    const newState = getIndexState(percentDrop, high3yDate);
+    const prevRow = await db.get('SELECT state FROM index_metrics WHERE symbol = $1', symbol);
+    const prevState = prevRow?.state != null ? Number(prevRow.state) : null;
+
+    if (isStateWorse(prevState, newState)) {
+      const prevLabel = getStateLabel(prevState) || '(이전 없음)';
+      const newLabel = getStateLabel(newState) || '알 수 없음';
+      await notify(
+        `지수 상태 악화: ${indexInfo.shortLabel}`,
+        `${indexInfo.label}\n${prevLabel} → ${newLabel}\n고가 대비: ${percentDrop != null ? percentDrop.toFixed(1) : '-'}%`
+      );
+    }
+
     await db.run(`
       INSERT INTO index_metrics (
         symbol,
@@ -283,8 +298,9 @@ function setupMarketIndexWorker(yahooFinance) {
         percent_drop,
         currency,
         exchange,
-        updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        updated_at,
+        state
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       ON CONFLICT (symbol) DO UPDATE SET
         slug = excluded.slug,
         label = excluded.label,
@@ -296,7 +312,8 @@ function setupMarketIndexWorker(yahooFinance) {
         percent_drop = excluded.percent_drop,
         currency = excluded.currency,
         exchange = excluded.exchange,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        state = excluded.state
     `,
       symbol,
       indexInfo.slug,
@@ -309,7 +326,8 @@ function setupMarketIndexWorker(yahooFinance) {
       percentDrop,
       currency,
       exchange,
-      updatedAt
+      updatedAt,
+      newState
     );
 
     console.log(`[Market Index Worker] ✓ ${indexInfo.shortLabel} updated`);

@@ -15,6 +15,7 @@ const {
   setupMarketIndexWorker,
 } = require('./workers');
 const { MARKET_INDICES } = require('./market_indices');
+const { getStateLabel } = require('./index_state');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -413,6 +414,8 @@ app.get('/api/market-indices', authMiddleware, async (req, res) => {
         currency: null,
         exchange: null,
         updatedAt: null,
+        state: null,
+        stateLabel: null,
         isStale: true,
         isUpdating: false,
       };
@@ -434,6 +437,8 @@ app.get('/api/market-indices', authMiddleware, async (req, res) => {
         base.currency = row.currency || null;
         base.exchange = row.exchange || null;
         base.updatedAt = updatedAt;
+        base.state = row.state != null ? Number(row.state) : null;
+        base.stateLabel = getStateLabel(base.state);
         base.isStale = isStale;
 
         if (isStale) {

@@ -240,6 +240,12 @@ export default function PortfolioListPage({ user, onLogout }) {
                     <span className="market-index-region">{indexInfo.region}</span>
                   </div>
 
+                  {indexInfo.stateLabel && (
+                    <div className="market-index-state">
+                      {indexInfo.stateLabel}
+                    </div>
+                  )}
+
                   <div className={`market-index-drop ${dropClass}`}>
                     {formatPercent(indexInfo.percentDrop)}
                   </div>

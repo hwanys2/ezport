@@ -1414,6 +1414,17 @@ a.btn-primary {
   font-weight: 500;
 }
 
+.market-index-state {
+  font-size: 0.8rem;
+  color: #475569;
+  background: #e0f2fe;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-weight: 500;
+  display: inline-block;
+  margin-top: 6px;
+}
+
 .market-index-drop {
   font-size: 2rem;
   font-weight: 700;
