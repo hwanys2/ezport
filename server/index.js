@@ -16,6 +16,7 @@ const {
 } = require('./workers');
 const { MARKET_INDICES } = require('./market_indices');
 const { getStateLabel } = require('./index_state');
+const { sendMessage, isConfigured } = require('./telegram');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -1366,6 +1367,9 @@ if (process.env.NODE_ENV === 'production') {
   }
 }
 
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', async () => {
   console.log(`Server listening on 0.0.0.0:${PORT}`);
+  if (isConfigured()) {
+    await sendMessage('[테스트] 서버가 시작되었습니다. 텔레그램 알림이 정상 동작합니다.');
+  }
 });
