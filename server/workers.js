@@ -103,6 +103,16 @@ function setupPriceUpdateWorker(yahooFinance) {
     const { symbol } = job.data;
     console.log(`[Price Worker] Updating ${symbol}...`);
     
+    // 현금(cash): Yahoo 조회 없이 현재가 1 유지
+    if (symbol === 'CASH') {
+      await db.run(`
+        INSERT INTO latest_prices (symbol, price, name, exchange, currency, updated_at)
+        VALUES ('CASH', 1, 'Cash', NULL, 'KRW', $1)
+        ON CONFLICT (symbol) DO UPDATE SET price = 1, updated_at = EXCLUDED.updated_at
+      `, new Date().toISOString());
+      return { success: true, symbol: 'CASH' };
+    }
+    
     const result = await fetchYahooPrice(yahooFinance, symbol);
     if (result) {
       console.log(`[Price Worker] ✓ ${symbol} updated: ${result.price}`);

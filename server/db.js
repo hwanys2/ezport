@@ -409,6 +409,32 @@ async function initDb() {
     console.warn('[DB Migration] Error updating user email:', error?.message);
   }
 
+  // 현금(cash) 종목: 현재가 항상 1, 수량 = 금액
+  try {
+    await db.run(`
+      INSERT INTO assets (symbol, name, name_ko, exchange, currency, created_at)
+      VALUES ('CASH', 'Cash', '현금', NULL, 'KRW', $1)
+      ON CONFLICT (symbol) DO UPDATE SET
+        name = EXCLUDED.name,
+        name_ko = EXCLUDED.name_ko,
+        exchange = EXCLUDED.exchange,
+        currency = EXCLUDED.currency
+    `, new Date().toISOString());
+    await db.run(`
+      INSERT INTO latest_prices (symbol, price, name, exchange, currency, updated_at)
+      VALUES ('CASH', 1, 'Cash', NULL, 'KRW', $1)
+      ON CONFLICT (symbol) DO UPDATE SET
+        price = 1,
+        name = EXCLUDED.name,
+        exchange = EXCLUDED.exchange,
+        currency = EXCLUDED.currency,
+        updated_at = EXCLUDED.updated_at
+    `, new Date().toISOString());
+    console.log('[DB] CASH (현금) asset and price=1 seeded');
+  } catch (error) {
+    console.warn('[DB] Error seeding CASH asset:', error?.message);
+  }
+
   console.log('[DB] Database initialized successfully');
 }
 

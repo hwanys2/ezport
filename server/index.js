@@ -212,9 +212,10 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// 백그라운드로 가격 업데이트 큐에 추가
+// 백그라운드로 가격 업데이트 큐에 추가 (현금 CASH는 Yahoo 조회 제외)
 function queuePriceUpdates(symbols) {
-  symbols.forEach((symbol) => {
+  const toUpdate = symbols.filter((s) => s !== 'CASH');
+  toUpdate.forEach((symbol) => {
     priceUpdateQueue.add({ symbol }, {
       attempts: 3,
       backoff: {
@@ -225,7 +226,9 @@ function queuePriceUpdates(symbols) {
       removeOnFail: false,
     });
   });
-  console.log(`[Queue] Added ${symbols.length} symbols to update queue`);
+  if (toUpdate.length > 0) {
+    console.log(`[Queue] Added ${toUpdate.length} symbols to update queue`);
+  }
 }
 
 // 환율 업데이트 큐에 추가 (6시간 간격)
@@ -273,6 +276,17 @@ async function getLatestPrices(symbols, forceRefresh = false, context = '') {
   const now = new Date();
   
   for (const symbol of symbols) {
+    // 현금(cash): 현재가 항상 1, 수량 = 금액, Yahoo 조회 불필요
+    if (symbol === 'CASH') {
+      result[symbol] = {
+        price: 1,
+        name: 'Cash',
+        exchange: null,
+        currency: 'KRW',
+        updated_at: now.toISOString(),
+      };
+      continue;
+    }
     const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
     
     if (cached && cached.price != null) {
@@ -624,17 +638,19 @@ app.post('/api/portfolios', authMiddleware, async (req, res) => {
         });
       }
       
-      const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
-      if (!cached || !cached.price || cached.price <= 0) {
+      // 현금(cash): 현재가 항상 1
+      const price = symbol === 'CASH' ? 1 : (await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol))?.price;
+      if (price == null || price <= 0) {
         return res.status(400).json({ 
           error: `종목 ${symbol}의 가격 정보가 없습니다`,
           details: `${symbol} 종목의 가격이 캐시되어 있지 않습니다. 잠시 후 다시 시도해 주세요.`
         });
       }
+      const cached = symbol === 'CASH' ? { price: 1, name: 'Cash', exchange: null, currency: 'KRW' } : await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
       
       symbolData[symbol] = {
         asset,
-        price: cached.price,
+        price,
         name: cached.name,
         exchange: cached.exchange,
         currency: cached.currency,
@@ -734,6 +750,10 @@ app.get('/api/portfolios', authMiddleware, async (req, res) => {
   
   // 캐시된 가격만 조회 (큐에 넣지 않음)
   for (const symbol of symbols) {
+    if (symbol === 'CASH') {
+      latest[symbol] = { price: 1, name: 'Cash', exchange: null, currency: 'KRW', updated_at: null };
+      continue;
+    }
     const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
     
     if (cached && cached.price != null) {
@@ -1014,27 +1034,18 @@ app.post('/api/portfolios/:id/items', authMiddleware, async (req, res) => {
       });
     }
     
-    const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
-    
-    let entryPrice = null;
-    if (cached && cached.price != null) {
-      entryPrice = cached.price;
-      if (!cached.updated_at) {
-        queuePriceUpdates([symbol]);
-      }
-    } else {
-      queuePriceUpdates([symbol]);
+    // 현금(cash): 현재가 항상 1
+    const entryPrice = symbol === 'CASH' ? 1 : (await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol))?.price;
+    if (entryPrice == null || entryPrice <= 0) {
+      if (symbol !== 'CASH') queuePriceUpdates([symbol]);
       return res.status(400).json({ 
         error: `가격 정보가 없습니다`,
         details: `${symbol} 종목의 가격이 아직 조회되지 않았습니다. 백그라운드에서 조회 중입니다. 잠시 후 다시 시도해 주세요.`
       });
     }
-    
-    if (!entryPrice || entryPrice <= 0) {
-      return res.status(400).json({ 
-        error: `가격 정보를 가져올 수 없습니다`,
-        details: `${symbol} 종목의 가격을 조회하지 못했습니다. 잠시 후 다시 시도해 주세요.`
-      });
+    if (symbol !== 'CASH') {
+      const cached = await db.get('SELECT * FROM latest_prices WHERE symbol = $1', symbol);
+      if (cached && !cached.updated_at) queuePriceUpdates([symbol]);
     }
 
     await db.run(`
