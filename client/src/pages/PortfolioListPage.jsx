@@ -240,6 +240,16 @@ export default function PortfolioListPage({ user, onLogout }) {
                     <span className="market-index-region">{indexInfo.region}</span>
                   </div>
 
+                  {indexInfo.symbol === '^VIX' && indexInfo.currentPrice != null && (
+                    <span
+                      className={`market-index-vix-badge ${
+                        indexInfo.currentPrice < 20 ? 'stable' : 'caution'
+                      }`}
+                    >
+                      {indexInfo.currentPrice < 20 ? '안정' : '경계'}
+                    </span>
+                  )}
+
                   {indexInfo.stateLabel && (
                     <div className="market-index-state">
                       {indexInfo.stateLabel}
