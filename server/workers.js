@@ -283,7 +283,7 @@ function setupMarketIndexWorker(yahooFinance) {
     const updatedAt = new Date().toISOString();
 
     const newState = getIndexState(percentDrop, high3yDate);
-    const prevRow = await db.get('SELECT state FROM index_metrics WHERE symbol = $1', symbol);
+    const prevRow = await db.get('SELECT state, current_price FROM index_metrics WHERE symbol = $1', symbol);
     const prevState = prevRow?.state != null ? Number(prevRow.state) : null;
 
     if (isStateWorse(prevState, newState)) {
@@ -293,6 +293,20 @@ function setupMarketIndexWorker(yahooFinance) {
         `지수 상태 악화: ${indexInfo.shortLabel}`,
         `${indexInfo.label}\n${prevLabel} → ${newLabel}\n고가 대비: ${percentDrop != null ? percentDrop.toFixed(1) : '-'}%`
       );
+    }
+
+    // VIX 안정(20 미만) ↔ 경계(20 이상) 전환 시 텔레그램 알림
+    if (symbol === '^VIX' && currentPrice != null && prevRow?.current_price != null) {
+      const prevStable = prevRow.current_price < 20;
+      const newStable = currentPrice < 20;
+      if (prevStable !== newStable) {
+        const prevLabel = prevStable ? '안정' : '경계';
+        const newLabel = newStable ? '안정' : '경계';
+        await notify(
+          `VIX 상태 변경: ${indexInfo.shortLabel}`,
+          `${prevLabel} → ${newLabel}\n현재 VIX: ${currentPrice.toFixed(1)}`
+        );
+      }
     }
 
     await db.run(`
