@@ -250,22 +250,26 @@ export default function PortfolioListPage({ user, onLogout }) {
                     </span>
                   )}
 
-                  {indexInfo.stateLabel && (
+                  {indexInfo.symbol !== '^VIX' && indexInfo.stateLabel && (
                     <div className="market-index-state">
                       {indexInfo.stateLabel}
                     </div>
                   )}
 
-                  <div className={`market-index-drop ${dropClass}`}>
-                    {formatPercent(indexInfo.percentDrop)}
-                  </div>
+                  {indexInfo.symbol !== '^VIX' && (
+                    <div className={`market-index-drop ${dropClass}`}>
+                      {formatPercent(indexInfo.percentDrop)}
+                    </div>
+                  )}
 
-                  <div className="market-index-progress">
-                    <div
-                      className="market-index-progress-fill"
-                      style={{ width: `${progressPercent}%` }}
-                    />
-                  </div>
+                  {indexInfo.symbol !== '^VIX' && (
+                    <div className="market-index-progress">
+                      <div
+                        className="market-index-progress-fill"
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                  )}
 
                   <div className="market-index-values">
                     <div>
@@ -274,17 +278,19 @@ export default function PortfolioListPage({ user, onLogout }) {
                         {formatIndexValue(indexInfo.currentPrice, indexInfo.currency)}
                       </span>
                     </div>
-                    <div>
-                      <span className="market-index-value-label">
-                        3년 고가
-                        {indexInfo.high3yDate && formatDaysAgo(indexInfo.high3yDate) && (
-                          <span className="market-index-high-date">({formatDaysAgo(indexInfo.high3yDate)})</span>
-                        )}
-                      </span>
-                      <span className="market-index-value">
-                        {formatIndexValue(indexInfo.high3y, indexInfo.currency)}
-                      </span>
-                    </div>
+                    {indexInfo.symbol !== '^VIX' && (
+                      <div>
+                        <span className="market-index-value-label">
+                          3년 고가
+                          {indexInfo.high3yDate && formatDaysAgo(indexInfo.high3yDate) && (
+                            <span className="market-index-high-date">({formatDaysAgo(indexInfo.high3yDate)})</span>
+                          )}
+                        </span>
+                        <span className="market-index-value">
+                          {formatIndexValue(indexInfo.high3y, indexInfo.currency)}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   {(indexInfo.coveredCall || indexInfo.etf) && (
