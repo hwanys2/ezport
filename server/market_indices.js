@@ -36,6 +36,15 @@ const MARKET_INDICES = [
     etf: 'QQQ',
   },
   {
+    slug: 'vix',
+    symbol: '^VIX',
+    label: 'CBOE 변동성 지수',
+    shortLabel: 'VIX',
+    region: '미국',
+    coveredCall: null,
+    etf: null,
+  },
+  {
     slug: 'china-internet',
     symbol: 'H30533.SS',
     label: 'CSI Overseas China Internet',
