@@ -1505,6 +1505,57 @@ a.btn-primary {
   color: #0f172a;
 }
 
+.market-index-drop-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.market-index-drop-levels-title {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.market-index-drop-levels-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.market-index-drop-level-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+
+.market-index-drop-level-row.passed {
+  background: #fef2f2;
+}
+
+.market-index-drop-level-pct {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.market-index-drop-level-row.passed .market-index-drop-level-pct {
+  color: #b91c1c;
+}
+
+.market-index-drop-level-price {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.market-index-drop-level-row.passed .market-index-drop-level-price {
+  color: #b91c1c;
+}
+
 .market-index-related {
   display: flex;
   flex-wrap: wrap;

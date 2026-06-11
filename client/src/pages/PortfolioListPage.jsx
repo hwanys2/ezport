@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import { apiFetch, getToken } from '../api'
 import TopBar from '../components/TopBar'
 
+const DROP_LEVELS = [10, 20, 30, 40, 50]
+
 export default function PortfolioListPage({ user, onLogout }) {
   const [items, setItems] = useState([])
   const [publicPortfolios, setPublicPortfolios] = useState([])
@@ -292,6 +294,30 @@ export default function PortfolioListPage({ user, onLogout }) {
                       </div>
                     )}
                   </div>
+
+                  {indexInfo.symbol !== '^VIX' && indexInfo.high3y != null && (
+                    <div className="market-index-drop-levels">
+                      <span className="market-index-drop-levels-title">고가 대비 하락 구간</span>
+                      <div className="market-index-drop-levels-grid">
+                        {DROP_LEVELS.map((pct) => {
+                          const levelPrice = indexInfo.high3y * (1 - pct / 100)
+                          const isPassed =
+                            indexInfo.currentPrice != null && indexInfo.currentPrice <= levelPrice
+                          return (
+                            <div
+                              key={pct}
+                              className={`market-index-drop-level-row${isPassed ? ' passed' : ''}`}
+                            >
+                              <span className="market-index-drop-level-pct">-{pct}%</span>
+                              <span className="market-index-drop-level-price">
+                                {formatIndexValue(levelPrice, indexInfo.currency)}
+                              </span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {(indexInfo.coveredCall || indexInfo.etf) && (
                     <div className="market-index-related">

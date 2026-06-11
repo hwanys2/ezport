@@ -25,7 +25,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
 const YahooFinanceCtor = yahooFinanceModule?.default || yahooFinanceModule;
 const yahooFinance = new YahooFinanceCtor({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
 
-const MARKET_INDEX_CACHE_MINUTES = 60;
+const MARKET_INDEX_CACHE_MINUTES = 30;
 
 // 서버 시작 시 큐 상태 확인 및 워커 시작 (큐 작업은 이어서 실행)
 (async () => {
@@ -84,10 +84,10 @@ const MARKET_INDEX_CACHE_MINUTES = 60;
     // 서버 시작 시 시장 지수 확인
     await checkMarketIndices();
 
-    // 3시간마다 주요 지수 업데이트를 큐에 추가 (접속 없어도 알림 가능하도록)
-    const MARKET_INDEX_AUTO_UPDATE_INTERVAL_MS = 3 * 60 * 60 * 1000;
+    // 30분마다 주요 지수 업데이트를 큐에 추가 (접속 없어도 알림 가능하도록)
+    const MARKET_INDEX_AUTO_UPDATE_INTERVAL_MS = 30 * 60 * 1000;
     async function enqueueAllMarketIndices() {
-      console.log('[Schedule] 3시간 주기: 주요 지수 업데이트 큐에 추가');
+      console.log('[Schedule] 30분 주기: 주요 지수 업데이트 큐에 추가');
       for (const { symbol, shortLabel } of MARKET_INDICES) {
         const result = await queueMarketIndexUpdate(symbol);
         if (result?.queued) {

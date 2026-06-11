@@ -46,12 +46,12 @@ const MARKET_INDICES = [
   },
   {
     slug: 'china-internet',
-    symbol: 'H30533.SS',
-    label: 'CSI Overseas China Internet',
+    symbol: 'KWEB',
+    label: '중국 인터넷 (KWEB)',
     shortLabel: 'China Internet',
     region: '중국',
     coveredCall: 'KLIP',
-    etf: 'KWEB',
+    etf: null,
   },
   {
     slug: 'kospi',
